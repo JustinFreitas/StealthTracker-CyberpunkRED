@@ -83,6 +83,7 @@ async function runTests() {
 
         -- Mock ActorManager APIs
         function ActorManager.getCreatureNode(v) return v end
+        function ActorManager.getActor(v) return v end
         function ActorManager.getRecordType(v)
             if type(v) == "table" and type(v.getChild) == "function" then
                 local nodeType = v.getChild("recordType")
@@ -251,6 +252,56 @@ async function runTests() {
     await runAssert("isValidCTNode(nodeValidPC)", true, "return isValidCTNode(nodeValidPC)");
     await runAssert("isValidCTNode(nodeValidNPC)", true, "return isValidCTNode(nodeValidNPC)");
     await runAssert("isValidCTNode(nodeInvalidType)", false, "return isValidCTNode(nodeInvalidType)");
+
+    // --- GROUP I: doesTargetPerceiveAttackerFromStealth (Condition Coverage) ---
+    // Target perception calculated = 15 (Base 5 + INT 6 + PERC 4)
+    await lua.doString(`
+        mockTarget = mockPCNode
+    `);
+    // Case 1: Attacker Stealth is 14 (lower than target perception 15) -> returns true (spotted)
+    await runAssert("doesTargetPerceiveAttackerFromStealth(14) [spotted]", true, "return doesTargetPerceiveAttackerFromStealth(14, mockTarget)");
+    // Case 2: Attacker Stealth is 15 (equal to target perception 15) -> returns true (spotted)
+    await runAssert("doesTargetPerceiveAttackerFromStealth(15) [spotted]", true, "return doesTargetPerceiveAttackerFromStealth(15, mockTarget)");
+    // Case 3: Attacker Stealth is 16 (higher than target perception 15) -> returns false (hidden)
+    await runAssert("doesTargetPerceiveAttackerFromStealth(16) [hidden]", false, "return doesTargetPerceiveAttackerFromStealth(16, mockTarget)");
+
+    // --- GROUP J: getActorDebilitatingCondition (Condition Coverage) ---
+    await lua.doString(`
+        -- Mock helper to scan effects table
+        function EffectManager.hasEffect(rActor, sEffect)
+            if rActor.data and rActor.data.effects then
+                for _, eff in ipairs(rActor.data.effects) do
+                    if eff == sEffect then return true end
+                end
+            end
+            return false
+        end
+
+        actorDead = createMockNode({ recordType = "npc", effects = { "dead" } })
+        actorUnconscious = createMockNode({ recordType = "npc", effects = { "unconscious" } })
+        actorStunned = createMockNode({ recordType = "npc", effects = { "stunned" } })
+        actorHealthy = createMockNode({ recordType = "npc", effects = {} })
+    `);
+    await runAssert("getActorDebilitatingCondition(dead)", "dead", "return getActorDebilitatingCondition(actorDead)");
+    await runAssert("getActorDebilitatingCondition(unconscious)", "unconscious", "return getActorDebilitatingCondition(actorUnconscious)");
+    await runAssert("getActorDebilitatingCondition(stunned)", "stunned", "return getActorDebilitatingCondition(actorStunned)");
+    await runAssert("getActorDebilitatingCondition(healthy)", null, "return getActorDebilitatingCondition(actorHealthy)");
+
+    // --- GROUP K: isStealthTrackerDisabledForActor (Condition Coverage) ---
+    await lua.doString(`
+        actorDisabled = createMockNode({ senses = "No StealthTracker, Darkvision" })
+        actorEnabledSenses = createMockNode({ senses = "Darkvision 60ft" })
+    `);
+    await runAssert("isStealthTrackerDisabledForActor(disabled)", "no stealthtracker", "return isStealthTrackerDisabledForActor(actorDisabled)");
+    await runAssert("isStealthTrackerDisabledForActor(enabled)", null, "return isStealthTrackerDisabledForActor(actorEnabledSenses)");
+
+    // --- GROUP L: isValidCTNode with Disabled Senses (Condition Coverage) ---
+    await lua.doString(`
+        actorPCDisabled = createMockNode({ recordType = "pc", senses = "No StealthTracker" })
+        actorNPCDisabled = createMockNode({ recordType = "npc", senses = "No StealthTracker" })
+    `);
+    await runAssert("isValidCTNode(PC disabled)", false, "return isValidCTNode(actorPCDisabled)");
+    await runAssert("isValidCTNode(NPC disabled)", false, "return isValidCTNode(actorNPCDisabled)");
 
     // 4. Print Summary
     console.log(`\nTest Summary: ${testsPassed} passed, ${testsFailed} failed.`);
