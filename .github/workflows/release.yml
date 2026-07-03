@@ -1,0 +1,35 @@
+name: Release Cyberpunk RED StealthTracker
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    name: Build & Release Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create Extension Package
+        run: |
+          mkdir -p out
+          zip -r out/CyberpunkRED-StealthTracker.ext extension.xml README.md graphics scripts
+          echo "Extension successfully packaged."
+
+      - name: Generate Release Notes
+        run: |
+          echo "Automated release of Cyberpunk RED StealthTracker extension." > release_notes.md
+          echo "Version: ${GITHUB_REF_NAME}" >> release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create a draft or public release and upload the ext package
+          gh release create "${{ github.ref_name || 'v1.0' }}" out/CyberpunkRED-StealthTracker.ext \
+            --title "${{ github.ref_name || 'v1.0' }}" \
+            --notes-file release_notes.md
