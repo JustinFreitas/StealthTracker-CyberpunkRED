@@ -4,9 +4,7 @@
 .vscode/settings.json
 scripts/.luacheckrc
 readme.txt
-build/out/StealthTracker.zip
+build/out/
 .vscode/launch.json
-build/out/StealthTracker.ext
-build/out/StealthTracker4e.ext
 scripts/luacheck.exe
 .claude/

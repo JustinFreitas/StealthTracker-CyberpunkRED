@@ -10,10 +10,6 @@ EFFECTS = "effects"
 FORCE_DISPLAY = true
 GENACTROLL = "genactroll"
 HIDDEN = "hidden"
-IS_FGC = false
-LAST_DRAG_INFO = nil
-LAST_NODE_NAME = nil
-LAST_NODE_TYPE = nil
 LOCALIZED_DEXTERITY = "DEX"
 LOCALIZED_DEXTERITY_LOWER = LOCALIZED_DEXTERITY:lower()
 LOCALIZED_STEALTH = "Stealth"
@@ -239,7 +235,6 @@ local function getResultHandlerSafe(sType)
 end
 
 function onInit()
-	IS_FGC = checkFGC()
 	LOCALIZED_DEXTERITY = "DEX"
 	LOCALIZED_DEXTERITY_LOWER = LOCALIZED_DEXTERITY:lower()
 	LOCALIZED_STEALTH = "Stealth"
@@ -368,11 +363,6 @@ end
 
 function checkFactionFilter()
 	return OptionsManager.isOption(STEALTHTRACKER_FACTION_FILTER, ON)
-end
-
-function checkFGC()
-	local nMajor = Interface.getVersion()
-	return nMajor < 4
 end
 
 function checkShowEye()
@@ -1022,18 +1012,6 @@ function onCombatResetEvent()
 end
 
 function onDrop(nodetype, nodename, draginfo)
-	if IS_FGC then
-		if LAST_DRAG_INFO == draginfo and LAST_NODE_NAME == nodename and LAST_NODE_TYPE == nodetype then
-			LAST_DRAG_INFO = nil
-			LAST_NODE_NAME = nil
-			LAST_NODE_TYPE = nil
-			return
-		end
-		LAST_DRAG_INFO = draginfo
-		LAST_NODE_NAME = nodename
-		LAST_NODE_TYPE = nodetype
-	end
-
 	local rSource = ActionsManager.decodeActors(draginfo)
 	local rTarget = getActorSafe(nodename)
 	onDropEvent(rSource, rTarget, draginfo)

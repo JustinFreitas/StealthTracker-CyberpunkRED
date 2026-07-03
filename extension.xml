@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
 
 <root version="3.3" release="8.1|CoreRPG:4.1">
-	<announcement text="StealthTracker v1.0 FGU CyberpunkRED, 2026 Justin Freitas" font="emotefont" icon="stealth_icon" />
+	<announcement text="Cyberpunk RED StealthTracker v1.0, 2026 Justin Freitas" font="emotefont" icon="stealth_icon" />
 	<properties>
-		<name>Feature: StealthTracker (Cyberpunk RED)</name>
+		<name>Feature: Cyberpunk RED StealthTracker</name>
 		<version>1.0</version>
 		<loadorder>9999</loadorder>
 		<author>Justin Freitas</author>
@@ -14,7 +14,7 @@
 	</properties>
 	
 	<base>
-		<string name="option_header_STEALTHTRACKER">StealthTracker (GM)</string>
+		<string name="option_header_STEALTHTRACKER">Cyberpunk RED StealthTracker (GM)</string>
 		<string name="option_label_STEALTHTRACKER_ALLOW_OUT_OF">Player: Out of turn or combat Stealth</string>
 		<string name="option_label_STEALTHTRACKER_AWARE">Chat: 'Sees Actor' verbosity</string>
 		<string name="option_label_STEALTHTRACKER_EXPIRE_EFFECT">CT: Expire Stealth effect</string>
