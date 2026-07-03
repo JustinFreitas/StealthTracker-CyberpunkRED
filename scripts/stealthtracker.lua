@@ -631,7 +631,7 @@ end
 -- Base Perception check calculation (Cyberpunk RED compatible)
 function getPassivePerceptionNumber(vActor)
 	local nodeCreature = ActorManager.getCreatureNode(vActor)
-	if not nodeCreature then return 10 end
+	if not nodeCreature then return 5 end
 
 	local nSkillBase = 0
 	-- Try to use the official ruleset's Reusable library first!
@@ -650,8 +650,8 @@ function getPassivePerceptionNumber(vActor)
 		nSkillBase = nInt + nPerception
 	end
 
-	-- Base detection threshold is 10 + SkillBase (Stat + Skill Level)
-	local nPP = 10 + nSkillBase
+	-- Base detection threshold is 5 + SkillBase (Stat + Skill Level)
+	local nPP = 5 + nSkillBase
 
     return modifyPassivePerceptionForActorEffects(nodeCreature, nPP)
 end
