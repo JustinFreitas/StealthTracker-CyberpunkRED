@@ -973,7 +973,14 @@ function isUnidentifiedNpc(nodeRecord)
 end
 
 function isValidCTNode(nodeCT)
-	return (hasValidType(nodeCT) or isFriend(nodeCT)) and not isStealthTrackerDisabledForActor(nodeCT)
+	if not nodeCT then return false end
+	if isStealthTrackerDisabledForActor(nodeCT) then return false end
+
+	local sRecordType = ActorManager.getRecordType(nodeCT)
+	if sRecordType == "pc" or sRecordType == "npc" then
+		return true
+	end
+	return isFriend(nodeCT)
 end
 
 function modifyPassivePerceptionForActorEffects(nodeCreature, nPP)
