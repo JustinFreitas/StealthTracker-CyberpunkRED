@@ -22,6 +22,12 @@ async function runTests() {
         ActionsManager = {}
         EffectManager = {}
         OOBManager = {}
+        StringManager = {}
+
+        -- Mock StringManager behavior
+        function StringManager.isBlank(s)
+            return s == nil or s == "" or s:gsub("%s+", "") == ""
+        end
 
         -- Helper to create a mock databasenode
         function createMockNode(data)
@@ -75,10 +81,28 @@ async function runTests() {
             return node
         end
 
+        -- Mock ActorManager APIs
         function ActorManager.getCreatureNode(v) return v end
-        function ActorManager.getRecordType(v) return v.recordType or "pc" end
+        function ActorManager.getRecordType(v)
+            if type(v) == "table" and type(v.getChild) == "function" then
+                local nodeType = v.getChild("recordType")
+                if nodeType then return nodeType.getValue() end
+            end
+            if type(v) == "table" and v.recordType then return v.recordType end
+            return "pc"
+        end
         function ActorManager.getCTNode(v) return v end
+        function ActorManager.getFaction(v)
+            if type(v) == "table" and type(v.getChild) == "function" then
+                local nodeFaction = v.getChild("faction")
+                if nodeFaction then return nodeFaction.getValue() end
+            end
+            if type(v) == "table" and v.faction then return v.faction end
+            return "friend"
+        end
+        function ActorManager.getDisplayName(v) return v.displayName or "MockActor" end
 
+        -- Mock DB APIs
         function DB.getValue(node, path, default)
             if type(node) == "table" and type(node.getChild) == "function" then
                 local child = node.getChild(path)
@@ -88,6 +112,10 @@ async function runTests() {
                 return node[path]
             end
             return default
+        end
+        
+        function DB.getText(node, path, default)
+            return DB.getValue(node, path, default) or ""
         end
 
         -- Mock OptionsManager
@@ -126,14 +154,12 @@ async function runTests() {
         }
     }
 
-    // --- TEST 1: booleanToNumber ---
+    // --- GROUP A: Core Math & Conversions ---
     await runAssert("booleanToNumber(true)", 1, "return booleanToNumber(true)");
     await runAssert("booleanToNumber(false)", 0, "return booleanToNumber(false)");
 
-    // --- TEST 2: checkAllowOutOfCombat ---
+    // --- GROUP B: Settings & Flags ---
     await runAssert("checkAllowOutOfCombat() default", false, "return checkAllowOutOfCombat()");
-
-    // --- TEST 3: checkAllowOutOfCombat custom options ---
     await lua.doString(`
         function OptionsManager.isOption(key, val)
             if key == "STEALTHTRACKER_ALLOW_OUT_OF" and val == "all" then return true end
@@ -141,9 +167,63 @@ async function runTests() {
         end
     `);
     await runAssert("checkAllowOutOfCombat() enabled", true, "return checkAllowOutOfCombat()");
+    
+    // Reset isOption stub
+    await lua.doString(`function OptionsManager.isOption() return false end`);
 
-    // --- TEST 4: getPassivePerceptionNumber (with fallback DB scan)
-    // Setup mock character node (intelligence = 6, perception = 4)
+    // --- GROUP C: Roll Type Identification ---
+    await runAssert("isStealthSkillRoll('Stealth Check')", true, "return isStealthSkillRoll('Stealth Check')");
+    await runAssert("isStealthSkillRoll('Perception')", false, "return isStealthSkillRoll('Perception')");
+    
+    await runAssert("isDexterityCheckRoll('Dex check')", true, "return isDexterityCheckRoll('Dex check')");
+    await runAssert("isDexterityCheckRoll('Intelligence')", false, "return isDexterityCheckRoll('Intelligence')");
+    
+    await runAssert("isPerceptionSkillRoll('Perception check')", true, "return isPerceptionSkillRoll('Perception check')");
+    await runAssert("isPerceptionSkillRoll('Stealth')", false, "return isPerceptionSkillRoll('Stealth')");
+
+    // --- GROUP D: Character / Actor Checks ---
+    await lua.doString(`
+        mockPC = createMockNode({ recordType = "pc", faction = "friend" })
+        mockNPC = createMockNode({ recordType = "npc", faction = "foe" })
+    `);
+    await runAssert("isNpc(mockNPC)", true, "return isNpc(mockNPC)");
+    await runAssert("isNpc(mockPC)", false, "return isNpc(mockPC)");
+    
+    await runAssert("isFriend(mockPC)", true, "return isFriend(mockPC)");
+    await runAssert("isFriend(mockNPC)", false, "return isFriend(mockNPC)");
+
+    await runAssert("isDifferentFaction(mockPC, mockNPC)", true, "return isDifferentFaction(mockPC, mockNPC)");
+    await runAssert("isDifferentFaction(mockPC, mockPC)", false, "return isDifferentFaction(mockPC, mockPC)");
+
+    // --- GROUP E: Unidentified NPC Names ---
+    await lua.doString(`
+        nodeUnidentified = createMockNode({
+            recordType = "npc",
+            isidentified = 0,
+            nonid_name = "Scary Cyborg"
+        })
+        nodeIdentified = createMockNode({
+            recordType = "npc",
+            isidentified = 1,
+            nonid_name = "Scary Cyborg"
+        })
+    `);
+    await runAssert("isUnidentifiedNpc(nodeUnidentified)", true, "return isUnidentifiedNpc(nodeUnidentified)");
+    await runAssert("isUnidentifiedNpc(nodeIdentified)", false, "return isUnidentifiedNpc(nodeIdentified)");
+    await runAssert("getUnidentifiedName(nodeUnidentified)", "Scary Cyborg", "return getUnidentifiedName(nodeUnidentified)");
+
+    // --- GROUP F: Effect Exclusions & Stealth values ---
+    await lua.doString(`
+        -- Mock EffectManager helper
+        EffectManager.parseEffect = function(label) return { label } end
+
+        nodeEffectStealth = createMockNode({ label = "Stealth: 14" })
+        nodeEffectOther = createMockNode({ label = "ATK: +2" })
+    `);
+    await runAssert("getStealthValueFromEffectNode('Stealth: 14')", "14", "return getStealthValueFromEffectNode(nodeEffectStealth)");
+    await runAssert("getStealthValueFromEffectNode('ATK: +2')", null, "return getStealthValueFromEffectNode(nodeEffectOther)");
+
+    // --- GROUP G: Passive Perception Math ---
     await lua.doString(`
         mockPCNode = createMockNode({
             stats = {
@@ -160,9 +240,17 @@ async function runTests() {
             }
         })
     `);
-    
-    // Run the calculation (Base 5 + INT 6 + PERC Base 4 = 15)
     await runAssert("getPassivePerceptionNumber(mockPC)", 15, "return getPassivePerceptionNumber(mockPCNode)");
+
+    // --- GROUP H: Combat Tracker Node Validity ---
+    await lua.doString(`
+        nodeValidPC = createMockNode({ recordType = "pc", faction = "friend" })
+        nodeValidNPC = createMockNode({ recordType = "npc", faction = "foe" })
+        nodeInvalidType = createMockNode({ recordType = "hazard", faction = "neutral" })
+    `);
+    await runAssert("isValidCTNode(nodeValidPC)", true, "return isValidCTNode(nodeValidPC)");
+    await runAssert("isValidCTNode(nodeValidNPC)", true, "return isValidCTNode(nodeValidNPC)");
+    await runAssert("isValidCTNode(nodeInvalidType)", false, "return isValidCTNode(nodeInvalidType)");
 
     // 4. Print Summary
     console.log(`\nTest Summary: ${testsPassed} passed, ${testsFailed} failed.`);
