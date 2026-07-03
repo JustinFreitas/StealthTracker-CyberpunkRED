@@ -64,9 +64,13 @@ local function getStatValueSafe(nodeActor, sStatName)
     if not nodeActor then return 0 end
     local sNameLower = sStatName:lower()
     
-    -- Check common direct paths
+    -- Check common direct paths (Cyberpunk RED INT/DEX properties use intCurrent, dexCurrent, etc.)
     local paths = {
+        sNameLower .. "Current",
+        sNameLower .. "Base",
         sNameLower,
+        "stats." .. sNameLower .. "Current",
+        "stats." .. sNameLower .. "Base",
         "stats." .. sNameLower .. ".value",
         "stats." .. sNameLower,
         sNameLower .. ".value",
@@ -88,7 +92,7 @@ local function getStatValueSafe(nodeActor, sStatName)
         for _, nodeStat in pairs(nodeStats.getChildren()) do
             local sNodeName = nodeStat.getName():lower()
             if sNodeName == sNameLower or sNodeName:match(sNameLower) or DB.getValue(nodeStat, "name", ""):lower() == sNameLower then
-                local val = DB.getValue(nodeStat, "value") or DB.getValue(nodeStat, "total")
+                local val = DB.getValue(nodeStat, "value") or DB.getValue(nodeStat, "total") or DB.getValue(nodeStat, "current")
                 if type(val) == "number" then
                     return val
                 end
@@ -110,17 +114,40 @@ local function getSkillValueSafe(nodeActor, sSkillName)
          return val
     end
     
-    -- Search skills or skilllist children
-    local listNodes = { "skilllist", "skills" }
+    -- Search skills or skilllist children (CPRed uses skillsCol)
+    local listNodes = { "skillsCol", "skilllist", "skills" }
     for _, listName in ipairs(listNodes) do
         local nodeSkills = nodeActor.getChild(listName)
         if nodeSkills then
-            for _, nodeSkill in pairs(nodeSkills.getChildren()) do
-                local sName = DB.getValue(nodeSkill, "name", ""):lower()
-                if sName == sSkillLower or sName:match(sSkillLower) then
-                    local rank = DB.getValue(nodeSkill, "level") or DB.getValue(nodeSkill, "rank") or DB.getValue(nodeSkill, "value") or DB.getValue(nodeSkill, "total") or DB.getValue(nodeSkill, "base")
-                    if type(rank) == "number" then
-                        return rank
+            for _, nodeSkillGroup in pairs(nodeSkills.getChildren()) do
+                -- CPRed PC character sheets list sub-skills (listSkillSpecifics)
+                local subLists = { "listSkillSpecifics", "listSubSkillSpecifics" }
+                local bHasChildren = false
+                for _, subListName in ipairs(subLists) do
+                    local nodeSub = nodeSkillGroup.getChild(subListName)
+                    if nodeSub then
+                        bHasChildren = true
+                        for _, nodeSubSkill in pairs(nodeSub.getChildren()) do
+                            local sName = DB.getValue(nodeSubSkill, "skillName", ""):gsub("%(x2%)", ""):gsub("%s+", ""):lower()
+                            if sName == sSkillLower or sName:match(sSkillLower) then
+                                local rank = DB.getValue(nodeSubSkill, "skillBase") or DB.getValue(nodeSubSkill, "level") or DB.getValue(nodeSubSkill, "rank") or DB.getValue(nodeSubSkill, "value") or DB.getValue(nodeSubSkill, "total")
+                                if type(rank) == "number" then
+                                    return rank
+                                end
+                            end
+                        end
+                    end
+                end
+
+                -- NPC skills lists or simple flat skills lists
+                if not bHasChildren then
+                    local sName = DB.getValue(nodeSkillGroup, "skillName", ""):gsub("%(x2%)", ""):gsub("%s+", ""):lower()
+                    if sName == "" then sName = DB.getValue(nodeSkillGroup, "name", ""):lower() end
+                    if sName == sSkillLower or sName:match(sSkillLower) then
+                        local rank = DB.getValue(nodeSkillGroup, "skillBase") or DB.getValue(nodeSkillGroup, "level") or DB.getValue(nodeSkillGroup, "rank") or DB.getValue(nodeSkillGroup, "value") or DB.getValue(nodeSkillGroup, "total")
+                        if type(rank) == "number" then
+                            return rank
+                        end
                     end
                 end
             end
@@ -518,33 +545,54 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 	local rCurrentActor = getActorSafe(nodeCT)
 	if not rCurrentActor or not isNpc(rCurrentActor) then return end
 
-	local rSkillsNode = nodeCT.getChild("skills")
-	if not rSkillsNode then return end
+	-- Check if Stealth skill is already defined on NPC
+	local bHasStealth = false
+	if Reusable and Reusable.getNPCSkillBaseFor then
+		local nBase, nLvl = Reusable.getNPCSkillBaseFor(nodeCT, "Stealth")
+		if nBase and nBase > 0 then
+			bHasStealth = true
+		end
+	end
 
-	if rSkillsNode.getType() == "string" then
-		-- Comma-separated string format (like 5e NPCs)
-		local sSkills = rSkillsNode.getText()
-		if not sSkills:match(LOCALIZED_STEALTH .. " [+-]%d") then
-			local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
-			local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
-			local sNewSkillsValue = sStealthWithMod .. ", " .. sSkills
-			rSkillsNode.setValue(sNewSkillsValue:gsub("^%s*(.-),%s*$", "%1"))
-		end
-	elseif rSkillsNode.getType() == "node" then
-		-- Structured list format (like standard CoreRPG/CPR)
-		local bFound = false
-		for _, nodeSkill in pairs(rSkillsNode.getChildren()) do
-			local sName = DB.getValue(nodeSkill, "name", ""):lower()
-			if sName == "stealth" then
-				bFound = true
-				break
-			end
-		end
-		if not bFound then
+	if not bHasStealth then
+		local rSkillsNode = nodeCT.getChild("skillsCol")
+		if rSkillsNode then
+			-- Official Cyberpunk RED NPC skills node
 			local nodeNewSkill = rSkillsNode.createChild()
-			DB.setValue(nodeNewSkill, "name", "string", "Stealth")
-			local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
-			DB.setValue(nodeNewSkill, "value", "number", nDex)
+			DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
+			local nDex = getStatValueSafe(nodeCT, "dexCurrent") or getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
+			DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
+			DB.setValue(nodeNewSkill, "skillLvl", "number", 0)
+			DB.setValue(nodeNewSkill, "isVisible", "number", 1)
+		else
+			-- Fallback to list/string based formats
+			local rSkillsStringNode = nodeCT.getChild("skills")
+			if rSkillsStringNode then
+				if rSkillsStringNode.getType() == "string" then
+					local sSkills = rSkillsStringNode.getText()
+					if not sSkills:match(LOCALIZED_STEALTH .. " [+-]%d") then
+						local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
+						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
+						local sNewSkillsValue = sStealthWithMod .. ", " .. sSkills
+						rSkillsStringNode.setValue(sNewSkillsValue:gsub("^%s*(.-),%s*$", "%1"))
+					end
+				elseif rSkillsStringNode.getType() == "node" then
+					local bFound = false
+					for _, nodeSkill in pairs(rSkillsStringNode.getChildren()) do
+						local sName = DB.getValue(nodeSkill, "name", ""):lower()
+						if sName == "stealth" then
+							bFound = true
+							break
+						end
+					end
+					if not bFound then
+						local nodeNewSkill = rSkillsStringNode.createChild()
+						DB.setValue(nodeNewSkill, "name", "string", "Stealth")
+						local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
+						DB.setValue(nodeNewSkill, "value", "number", nDex)
+					end
+				end
+			end
 		end
 	end
 end
@@ -597,10 +645,25 @@ function getPassivePerceptionNumber(vActor)
 	local nodeCreature = ActorManager.getCreatureNode(vActor)
 	if not nodeCreature then return 10 end
 
-	-- Base detection threshold is 10 + INT + Perception Skill Level
-	local nInt = getStatValueSafe(nodeCreature, "intelligence") or getStatValueSafe(nodeCreature, "int")
-	local nPerception = getSkillValueSafe(nodeCreature, "perception")
-	local nPP = 10 + nInt + nPerception
+	local nSkillBase = 0
+	-- Try to use the official ruleset's Reusable library first!
+	if Reusable and Reusable.getPCSkillBaseFor and Reusable.getNPCSkillBaseFor then
+		local sNodeType = ActorManager.getRecordType(vActor)
+		if sNodeType == "pc" then
+			nSkillBase = Reusable.getPCSkillBaseFor(nodeCreature, "Perception") or 0
+		else
+			local val, _ = Reusable.getNPCSkillBaseFor(nodeCreature, "Perception")
+			nSkillBase = val or 0
+		end
+	else
+		-- Fallback to our robust database scanner
+		local nInt = getStatValueSafe(nodeCreature, "intelligence") or getStatValueSafe(nodeCreature, "int")
+		local nPerception = getSkillValueSafe(nodeCreature, "perception")
+		nSkillBase = nInt + nPerception
+	end
+
+	-- Base detection threshold is 10 + SkillBase (Stat + Skill Level)
+	local nPP = 10 + nSkillBase
 
     return modifyPassivePerceptionForActorEffects(nodeCreature, nPP)
 end
