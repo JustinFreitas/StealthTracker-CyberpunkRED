@@ -249,7 +249,7 @@ function onInit()
     end
 
     -- Capture ruleset result handlers from ActionsManager (Host and Client)
-    ActionSkill_onRoll_Ruleset = getResultHandlerSafe("skill") or getResultHandlerSafe("cyberpunk_skill") or getResultHandlerSafe("skill_roll")
+    ActionSkill_onRoll_Ruleset = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll") or getResultHandlerSafe("skill")
     ActionAttack_onAttack_Ruleset = getResultHandlerSafe("attack") or getResultHandlerSafe("cyberpunk_attack") or getResultHandlerSafe("attack_roll")
 
 	-- Host only registrations
@@ -304,7 +304,7 @@ function onInit()
 	end
 
 	-- Register our handlers globally via ActionsManager
-	local aRollTypes = { "skill", "cyberpunk_skill", "skill_roll", "attack", "cyberpunk_attack", "attack_roll" }
+	local aRollTypes = { "skillroll", "classroll", "skill", "cyberpunk_skill", "skill_roll", "attack", "cyberpunk_attack", "attack_roll" }
 	for _, sType in ipairs(aRollTypes) do
 		if sType:match("attack") then
 			ActionsManager.registerResultHandler(sType, onRollAttack)
