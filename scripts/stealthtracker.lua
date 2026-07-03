@@ -953,7 +953,11 @@ function isPerceptionSkillRoll(sRollData)
 end
 
 function isStealthTrackerDisabledForActor(nodeCTActor)
-    return nodeCTActor and DB.getText(nodeCTActor, "senses", ""):lower():match("no stealthtracker")
+	if not nodeCTActor then return false end
+	local sSenses = DB.getText(nodeCTActor, "senses", ""):lower()
+	local sNotes = DB.getText(nodeCTActor, "notes", ""):lower()
+	local sDesc = DB.getText(nodeCTActor, "description", ""):lower()
+	return sSenses:match("no stealthtracker") or sNotes:match("no stealthtracker") or sDesc:match("no stealthtracker")
 end
 
 function isTargetHiddenFromSource(rSource, rTarget)

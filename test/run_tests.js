@@ -289,16 +289,20 @@ async function runTests() {
 
     // --- GROUP K: isStealthTrackerDisabledForActor (Condition Coverage) ---
     await lua.doString(`
-        actorDisabled = createMockNode({ senses = "No StealthTracker, Darkvision" })
-        actorEnabledSenses = createMockNode({ senses = "Darkvision 60ft" })
+        actorDisabled = createMockNode({ senses = "No StealthTracker, Low-Light Vision" })
+        actorDisabledNotes = createMockNode({ notes = "Some gm notes, no stealthtracker here" })
+        actorDisabledDesc = createMockNode({ description = "Drone unit (No StealthTracker)" })
+        actorEnabledSenses = createMockNode({ senses = "Infrared Vision" })
     `);
-    await runAssert("isStealthTrackerDisabledForActor(disabled)", "no stealthtracker", "return isStealthTrackerDisabledForActor(actorDisabled)");
+    await runAssert("isStealthTrackerDisabledForActor(disabled senses)", "no stealthtracker", "return isStealthTrackerDisabledForActor(actorDisabled)")
+    await runAssert("isStealthTrackerDisabledForActor(disabled notes)", "no stealthtracker", "return isStealthTrackerDisabledForActor(actorDisabledNotes)")
+    await runAssert("isStealthTrackerDisabledForActor(disabled desc)", "no stealthtracker", "return isStealthTrackerDisabledForActor(actorDisabledDesc)")
     await runAssert("isStealthTrackerDisabledForActor(enabled)", null, "return isStealthTrackerDisabledForActor(actorEnabledSenses)");
 
-    // --- GROUP L: isValidCTNode with Disabled Senses (Condition Coverage) ---
+    // --- GROUP L: isValidCTNode with Disabled Senses/Notes/Desc (Condition Coverage) ---
     await lua.doString(`
         actorPCDisabled = createMockNode({ recordType = "pc", senses = "No StealthTracker" })
-        actorNPCDisabled = createMockNode({ recordType = "npc", senses = "No StealthTracker" })
+        actorNPCDisabled = createMockNode({ recordType = "npc", notes = "No StealthTracker" })
     `);
     await runAssert("isValidCTNode(PC disabled)", false, "return isValidCTNode(actorPCDisabled)");
     await runAssert("isValidCTNode(NPC disabled)", false, "return isValidCTNode(actorNPCDisabled)");
