@@ -1,0 +1,27 @@
+{
+  "name": "stealthtracker-cyberpunkred",
+  "version": "1.0.0",
+  "description": "StealthTracker is a Fantasy Grounds Unity (FGU) extension designed for the **Cyberpunk RED** ruleset that automates the tracking of Stealth rolls in combat and resolves contested Stealth vs. Perception checks.",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JustinFreitas/StealthTracker-CyberpunkRED.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JustinFreitas/StealthTracker-CyberpunkRED/issues"
+  },
+  "homepage": "https://github.com/JustinFreitas/StealthTracker-CyberpunkRED#readme",
+  "devDependencies": {
+    "wasmoon": "^1.16.0"
+  }
+}

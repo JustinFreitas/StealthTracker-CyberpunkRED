@@ -6,8 +6,6 @@ scripts/.luacheckrc
 readme.txt
 build/out/
 node_modules/
-package.json
-package-lock.json
 .vscode/launch.json
 scripts/luacheck.exe
 .claude/
