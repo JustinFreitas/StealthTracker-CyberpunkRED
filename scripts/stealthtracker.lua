@@ -404,12 +404,13 @@ function displayDebilitatingConditionChatMessage(vActor, sCondition, bForce)
 end
 
 function displayProcessAttackFromStealth(rSource, rTarget)
-	if not rSource or rSource.sCTNode == nil or rSource.sCTNode == "" then return end
 	local nodeSourceCT = ActorManager.getCTNode(rSource)
 	if not nodeSourceCT then return end
 
+	local sCTNodePath = nodeSourceCT.getPath()
 	if not USER_ISHOST then
-		notifyAttackFromStealth(rSource.sCTNode, (rTarget and rTarget.sCTNode) or "")
+		local nodeTargetCT = rTarget and ActorManager.getCTNode(rTarget)
+		notifyAttackFromStealth(sCTNodePath, (nodeTargetCT and nodeTargetCT.getPath()) or "")
 		return
 	end
 
@@ -450,28 +451,28 @@ function displayProcessAttackFromStealth(rSource, rTarget)
 end
 
 function displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
-	if rSource.sCTNode ~= "" and ActionsManager.doesRollHaveDice(rRoll) then
+	local nodeSourceCT = ActorManager.getCTNode(rSource)
+	if nodeSourceCT and ActionsManager.doesRollHaveDice(rRoll) then
+		local sCTNodePath = nodeSourceCT.getPath()
 		local nStealthTotal = ActionsManager.total(rRoll)
 		if USER_ISHOST then
-			if checkAndDisplayAllowOutOfCombatAndTurnChecks(rSource.sCTNode) then
-				setNodeWithStealthValue(rSource.sCTNode, nStealthTotal)
+			if checkAndDisplayAllowOutOfCombatAndTurnChecks(sCTNodePath) then
+				setNodeWithStealthValue(sCTNodePath, nStealthTotal)
                 if OptionsManager.getOption(STEALTHTRACKER_SHOW_AFTER_STEALTH) == ON then
-                    local nodeCT = ActorManager.getCTNode(rSource.sCTNode)
-                    displayStealthCheckInformationWithConditionAndVerboseChecks(nodeCT, FORCE_DISPLAY)
+                    displayStealthCheckInformationWithConditionAndVerboseChecks(nodeSourceCT, FORCE_DISPLAY)
                 end
 			end
 		elseif isPlayerStealthInfoDisabled() and not checkVerbosityOff() then
 			local output = string.format("The DM has StealthTracker info set to hidden. Use the dice tower to make your %s roll.", LOCALIZED_STEALTH)
 			displayChatMessage(output, false)
 		else
-			notifyUpdateStealth(rSource.sCTNode, nStealthTotal)
+			notifyUpdateStealth(sCTNodePath, nStealthTotal)
 		end
 	end
 end
 
 -- Intercept active perception rolls and compare them to tracked stealth values on the Combat Tracker
 function displayProcessActivePerception(rSource, rRoll)
-	if not rSource or rSource.sCTNode == nil or rSource.sCTNode == "" then return end
 	local nodeSourceCT = ActorManager.getCTNode(rSource)
 	if not nodeSourceCT then return end
 
