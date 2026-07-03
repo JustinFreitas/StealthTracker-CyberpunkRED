@@ -425,7 +425,7 @@ function displayProcessAttackFromStealth(rSource, rTarget)
 	if rTarget then
 		local rHiddenTarget = isTargetHiddenFromSource(rSource, rTarget)
 		if rHiddenTarget and rHiddenTarget.hidden then
-			local sMsgText = string.format("Target hidden. Attack possible? (%s %s: %d, %s PP: %d).",
+			local sMsgText = string.format("Target hidden. Attack possible? (%s %s: %d, %s Perception: %d).",
 											ActorManager.getDisplayName(rTarget),
 											LOCALIZED_STEALTH_ABV,
 											rHiddenTarget.stealth,
@@ -617,11 +617,9 @@ function getActorDebilitatingCondition(vActor)
 	if not rActor then return nil end
 
 	local aConditions = {
+		"dead",
 		"unconscious",
-		"incapacitated",
-		"stunned",
-		"paralyzed",
-		"petrified"
+		"stunned"
 	}
 
 	for _, sCondition in ipairs(aConditions) do
@@ -679,14 +677,14 @@ function getFormattedPerformAttackFromStealth(rSource, rTarget, nStealthSource, 
 	local sMsgText
     local rTargetHidden = isTargetHiddenFromSource(rSource, rTarget)
 	if rTargetHidden and not rTargetHidden.hidden then
-		local sStats = string.format("(%s %s: %d, %s PP: %d)",
+		local sStats = string.format("(%s %s: %d, %s Perception: %d)",
 									 ActorManager.getDisplayName(rSource),
 									 LOCALIZED_STEALTH_ABV,
 									 nStealthSource,
 									 ActorManager.getDisplayName(rTarget),
 									 getPassivePerceptionNumber(rTarget))
 		if not doesTargetPerceiveAttackerFromStealth(nStealthSource, rTarget) then
-			sMsgText = string.format("Attacker is hidden. Attack at advantage/bonus? %s", sStats)
+			sMsgText = string.format("Attacker is hidden (Ambush). Target cannot dodge? %s", sStats)
 		elseif checkVerbosityMax() then
 			sMsgText = string.format("Attacker not hidden. %s", sStats)
 		else
@@ -742,7 +740,7 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
 
                     if nStealthSource ~= nil then
                         local sText = string.format("%s", sIterationActorDisplayName)
-                        local sPPText = string.format(" - PP: %d", getPassivePerceptionNumber(rIterationActor))
+                        local sPPText = string.format(" - Perception: %d", getPassivePerceptionNumber(rIterationActor))
                         local sConditionFormat = " - Condition: %s"
                         if doesTargetPerceiveAttackerFromStealth(nStealthSource, rIterationActor) then
                             if sDebilitatingCondition == nil then
@@ -769,7 +767,7 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
     if OptionsManager.getOption(STEALTHTRACKER_VISIBLE) ~= NONE then
         if OptionsManager.getOption(STEALTHTRACKER_VISIBLE) ~= VISIBLE then
             if #rStealthData.hidden > 0 then
-                local sText = string.format("%s (PP: %d) does not perceive:\r%s",
+                local sText = string.format("%s (Perception: %d) does not perceive:\r%s",
                                              sCTSourceDisplayName,
                                              getPassivePerceptionNumber(rCurrentActor),
                                              table.concat(rStealthData.hidden, "\r"))
@@ -784,7 +782,7 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
 
         if OptionsManager.getOption(STEALTHTRACKER_VISIBLE) ~= HIDDEN then
             if #rStealthData.visible > 0 then
-                local sText = string.format("%s (PP: %d) sees:\r%s",
+                local sText = string.format("%s (Perception: %d) sees:\r%s",
                                              sCTSourceDisplayName,
                                              getPassivePerceptionNumber(rCurrentActor),
                                              table.concat(rStealthData.visible, "\r"))
