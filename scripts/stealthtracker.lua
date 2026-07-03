@@ -537,15 +537,28 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 
 	-- Check if Stealth skill is already defined on NPC
 	local bHasStealth = false
-	if Reusable and Reusable.getNPCSkillBaseFor then
+
+	-- 1. Scan skillsCol children directly for existing Stealth node
+	local rSkillsNode = nodeCT.getChild("skillsCol")
+	if rSkillsNode then
+		for _, nodeSkill in pairs(rSkillsNode.getChildren()) do
+			local sName = DB.getValue(nodeSkill, "skillName", ""):lower()
+			if sName == "stealth" then
+				bHasStealth = true
+				break
+			end
+		end
+	end
+
+	-- 2. Fallback to Reusable helper
+	if not bHasStealth and Reusable and Reusable.getNPCSkillBaseFor then
 		local nBase, nLvl = Reusable.getNPCSkillBaseFor(nodeCT, "Stealth")
-		if nBase and nBase > 0 then
+		if nBase then
 			bHasStealth = true
 		end
 	end
 
 	if not bHasStealth then
-		local rSkillsNode = nodeCT.getChild("skillsCol")
 		if rSkillsNode then
 			-- Official Cyberpunk RED NPC skills node
 			local nodeNewSkill = rSkillsNode.createChild()
