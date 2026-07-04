@@ -52,7 +52,7 @@ jobs:
       - name: Create Extension Package
         run: |
           mkdir -p out
-          zip -r out/CyberpunkRED-StealthTracker.ext extension.xml README.md graphics scripts
+          zip -r out/CyberpunkRED-StealthTracker.ext extension.xml README.md graphics scripts -x "graphics/StealthTrackerScreenshot.png"
           echo "Extension successfully packaged."
 
       - name: Generate Release Notes

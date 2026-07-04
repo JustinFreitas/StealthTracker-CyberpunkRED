@@ -1,14 +1,15 @@
-:: Assumes running from StealthTracker\build
-mkdir out\StealthTracker
-copy ..\extension.xml out\StealthTracker\
-copy ..\README.md out\StealthTracker\
-mkdir out\StealthTracker\scripts
-copy ..\scripts\stealthtracker.lua out\StealthTracker\scripts\
-mkdir out\StealthTracker\graphics\icons
-copy ..\graphics\icons\stealth_icon.png out\StealthTracker\graphics\icons\
+:: Assumes running from StealthTracker-CyberpunkRED\build
+mkdir out\CyberpunkRED-StealthTracker
+copy ..\extension.xml out\CyberpunkRED-StealthTracker\
+copy ..\README.md out\CyberpunkRED-StealthTracker\
+mkdir out\CyberpunkRED-StealthTracker\scripts
+copy ..\scripts\stealthtracker.lua out\CyberpunkRED-StealthTracker\scripts\
+mkdir out\CyberpunkRED-StealthTracker\graphics\icons
+copy ..\graphics\icons\stealth_icon.png out\CyberpunkRED-StealthTracker\graphics\icons\
 cd out
-CALL ..\zip-items StealthTracker
-rmdir /S /Q StealthTracker\
-copy StealthTracker.zip CyberpunkRED-StealthTracker.ext
+CALL ..\zip-items CyberpunkRED-StealthTracker
+rmdir /S /Q CyberpunkRED-StealthTracker\
+copy CyberpunkRED-StealthTracker.zip CyberpunkRED-StealthTracker.ext
+del CyberpunkRED-StealthTracker.zip
 cd ..
 explorer .\out
