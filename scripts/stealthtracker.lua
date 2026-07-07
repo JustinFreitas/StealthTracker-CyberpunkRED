@@ -74,6 +74,23 @@ local function isExplodingOrFumblingRoll(rRoll)
 	return false
 end
 
+-- Helper to parse the previous roll and combine it with the critical roll
+local function getCombinedRoll(rRoll)
+	if not rRoll then return nil end
+	local sType = rRoll.sType
+	if sType == "critRoll" or sType == "critSkillRoll" then
+		if rRoll.sPrevRoll and rRoll.sPrevRoll ~= "" then
+			local status, combinedRoll = pcall(Json.parse, rRoll.sPrevRoll)
+			if status and combinedRoll then
+				combinedRoll.aDice = { combinedRoll.aDice[1], rRoll.aDice[1] }
+				combinedRoll.sDesc = combinedRoll.sDesc .. rRoll.sDesc
+				return combinedRoll
+			end
+		end
+	end
+	return rRoll
+end
+
 -- Helper to dynamically resolve stat values from character/NPC nodes (Cyberpunk RED compatible)
 local function getStatValueSafe(nodeActor, sStatName)
     if not nodeActor then return 0 end
@@ -1126,14 +1143,16 @@ function onRollSkill(rSource, rTarget, rRoll)
 		fOriginal(rSource, rTarget, rRoll)
 	end
 
-	if rSource and rRoll and ActionsManager.doesRollHaveDice(rRoll) then
+	local rProcessedRoll = getCombinedRoll(rRoll)
+
+	if rSource and rProcessedRoll and ActionsManager.doesRollHaveDice(rProcessedRoll) then
 		if isExplodingOrFumblingRoll(rRoll) then
 			return
 		end
-		if isStealthSkillRoll(rRoll.sDesc) then
-			displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
-		elseif isPerceptionSkillRoll(rRoll.sDesc) then
-			displayProcessActivePerception(rSource, rRoll)
+		if isStealthSkillRoll(rProcessedRoll.sDesc) then
+			displayProcessStealthUpdateForSkillHandlers(rSource, rProcessedRoll)
+		elseif isPerceptionSkillRoll(rProcessedRoll.sDesc) then
+			displayProcessActivePerception(rSource, rProcessedRoll)
 		end
 	end
 end

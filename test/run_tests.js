@@ -8,9 +8,15 @@ async function runTests() {
     const luaFactory = new LuaFactory();
     const lua = await luaFactory.createEngine();
 
-    // 1. Mock the FGU Global Environment in the Lua State
-    console.log("Mocking FGU environment globals...");
-    
+    // Bind jsonParse JS helper for the Lua VM
+    lua.global.set('jsonParse', (str) => {
+        try {
+            return JSON.parse(str);
+        } catch (e) {
+            return null;
+        }
+    });
+
     // Stub global tables and methods
     await lua.doString(`
         ActorManager = {}
@@ -23,6 +29,7 @@ async function runTests() {
         EffectManager = {}
         OOBManager = {}
         StringManager = {}
+        Json = { parse = jsonParse }
 
         -- Mock StringManager behavior
         function StringManager.isBlank(s)
@@ -385,7 +392,8 @@ async function runTests() {
             lastEffectAdded = nil
             local rRoll = {
                 sType = "critRoll",
-                sDesc = "Stealth Check [Critical Success]",
+                sDesc = "+ 1d10 [Critical Success]",
+                sPrevRoll = '{"sType":"skillroll","sDesc":"Stealth Check","aDice":[{"type":"d10","result":10}],"nMod":0}',
                 aDice = { { type = "d10", result = 6 } }
             }
             onRollSkill(rSource, nil, rRoll)
