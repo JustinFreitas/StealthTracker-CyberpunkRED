@@ -42,7 +42,8 @@ VISIBLE = "visible"
 -- Configuration table for stealth effects to apply to observers
 STEALTH_EFFECT_MODIFIERS = {}
 
-local ActionSkill_onRoll_Ruleset, ActionAttack_onAttack_Ruleset, ActionSkill_onRoll_Original, CombatManager_onDrop, CombatManager_requestActivation
+local ActionSkill_onRoll_Original, CombatManager_onDrop, CombatManager_requestActivation
+aOriginalResultHandlers = {}
 
 -- Helper to safely check if a string is blank
 local function isBlankSafe(s)
@@ -248,9 +249,23 @@ function onInit()
         ActionSkill.onRoll = onInitiateSkill
     end
 
+    local aRollTypes = { "skillroll", "classroll", "classrollAttack", "skill", "cyberpunk_skill", "skill_roll", "attack", "cyberpunk_attack", "attack_roll", "critRoll", "critSkillRoll" }
+
     -- Capture ruleset result handlers from ActionsManager (Host and Client)
-    ActionSkill_onRoll_Ruleset = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll") or getResultHandlerSafe("skill")
-    ActionAttack_onAttack_Ruleset = getResultHandlerSafe("attack") or getResultHandlerSafe("cyberpunk_attack") or getResultHandlerSafe("attack_roll")
+    local fSkillFallback = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll") or getResultHandlerSafe("skill")
+    local fAttackFallback = getResultHandlerSafe("attack") or getResultHandlerSafe("cyberpunk_attack") or getResultHandlerSafe("attack_roll")
+
+    for _, sType in ipairs(aRollTypes) do
+        local fHandler = getResultHandlerSafe(sType)
+        if not fHandler then
+            if sType:match("attack") then
+                fHandler = fAttackFallback
+            else
+                fHandler = fSkillFallback
+            end
+        end
+        aOriginalResultHandlers[sType] = fHandler
+    end
 
 	-- Host only registrations
 	if USER_ISHOST then
@@ -304,7 +319,6 @@ function onInit()
 	end
 
 	-- Register our handlers globally via ActionsManager
-	local aRollTypes = { "skillroll", "classroll", "skill", "cyberpunk_skill", "skill_roll", "attack", "cyberpunk_attack", "attack_roll" }
 	for _, sType in ipairs(aRollTypes) do
 		if sType:match("attack") then
 			ActionsManager.registerResultHandler(sType, onRollAttack)
@@ -1074,9 +1088,11 @@ function onInitiateSkill(rSource, rTarget, rRoll)
 end
 
 function onRollAttack(rSource, rTarget, rRoll)
-    if type(ActionAttack_onAttack_Ruleset) == "function" then
-	    ActionAttack_onAttack_Ruleset(rSource, rTarget, rRoll)
-    end
+	local sType = rRoll and rRoll.sType
+	local fOriginal = sType and aOriginalResultHandlers[sType]
+	if type(fOriginal) == "function" then
+		fOriginal(rSource, rTarget, rRoll)
+	end
 
 	if not rTarget and rRoll.bSecret then
 		displayTowerRoll()
@@ -1086,9 +1102,11 @@ function onRollAttack(rSource, rTarget, rRoll)
 end
 
 function onRollSkill(rSource, rTarget, rRoll)
-    if type(ActionSkill_onRoll_Ruleset) == "function" then
-	    ActionSkill_onRoll_Ruleset(rSource, rTarget, rRoll)
-    end
+	local sType = rRoll and rRoll.sType
+	local fOriginal = sType and aOriginalResultHandlers[sType]
+	if type(fOriginal) == "function" then
+		fOriginal(rSource, rTarget, rRoll)
+	end
 
 	if rSource and rRoll and ActionsManager.doesRollHaveDice(rRoll) then
 		if isStealthSkillRoll(rRoll.sDesc) then
@@ -1096,7 +1114,7 @@ function onRollSkill(rSource, rTarget, rRoll)
 		elseif isPerceptionSkillRoll(rRoll.sDesc) then
 			displayProcessActivePerception(rSource, rRoll)
 		end
-    end
+	end
 end
 
 function processChatCommand(_, sParams)

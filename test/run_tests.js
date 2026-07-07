@@ -307,6 +307,73 @@ async function runTests() {
     await runAssert("isValidCTNode(PC disabled)", false, "return isValidCTNode(actorPCDisabled)");
     await runAssert("isValidCTNode(NPC disabled)", false, "return isValidCTNode(actorNPCDisabled)");
 
+    // --- GROUP M: Exploding Critical Success Roll ('critRoll') ---
+    await lua.doString(`
+        User.isHost = function() return false end
+        ActionsManager.doesRollHaveDice = function(rRoll) return true end
+        ActionsManager.total = function(rRoll)
+            local nTotal = 0
+            if rRoll.aDice then
+                for _, d in ipairs(rRoll.aDice) do
+                    nTotal = nTotal + d.result
+                end
+            end
+            nTotal = nTotal + (rRoll.nMod or 0)
+            return nTotal
+        end
+
+        DB.getChildren = function(node, path)
+            if node and type(node.getChild) == "function" then
+                local childNode = node.getChild(path)
+                if childNode and type(childNode.getChildren) == "function" then
+                    return childNode.getChildren()
+                end
+            end
+            return {}
+        end
+
+        CombatManager = {}
+        CombatManager.getActiveCT = function() return mockActiveCT end
+
+        local origGetCTNode = ActorManager.getCTNode
+        ActorManager.getCTNode = function(v)
+            if v == "mock.path" then
+                return mockActiveCT
+            end
+            return origGetCTNode(v)
+        end
+
+        lastEffectAdded = nil
+        EffectManager.addEffect = function(sUser, sIdentity, nodeCT, rEffect, bShowMsg)
+            lastEffectAdded = rEffect
+        end
+
+        -- Run onInit to register everything and populate aOriginalResultHandlers
+        onInit()
+
+        -- Mock ruleset original handler for critRoll
+        aOriginalResultHandlers["critRoll"] = function(rSource, rTarget, rRoll)
+            rRoll.nMod = 10 -- original roll of 10
+        end
+    `);
+
+    await runAssert(
+        "onRollSkill processes exploding critRoll correctly",
+        "Stealth: 16",
+        `
+            USER_ISHOST = true
+            local rSource = createMockNode({ recordType = "pc" })
+            mockActiveCT = rSource
+            local rRoll = {
+                sType = "critRoll",
+                sDesc = "Stealth Check [Critical Success]",
+                aDice = { { result = 6 } }
+            }
+            onRollSkill(rSource, nil, rRoll)
+            return lastEffectAdded and lastEffectAdded.sName
+        `
+    );
+
     // 4. Print Summary
     console.log(`\nTest Summary: ${testsPassed} passed, ${testsFailed} failed.`);
     
