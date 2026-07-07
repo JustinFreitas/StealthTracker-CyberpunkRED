@@ -56,6 +56,24 @@ local function isBlankSafe(s)
     return (string.gsub(s, "%s+", "") == "")
 end
 
+-- Helper to check if a roll is a primary skill/attack roll that will explode or fumble in Cyberpunk RED
+local function isExplodingOrFumblingRoll(rRoll)
+	if not rRoll then return false end
+	local sType = rRoll.sType
+	if sType == "critRoll" or sType == "critSkillRoll" then
+		return false
+	end
+	if rRoll.aDice and #rRoll.aDice > 0 then
+		local firstDie = rRoll.aDice[1]
+		if firstDie then
+			if firstDie.result == 10 or firstDie.result == 1 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 -- Helper to dynamically resolve stat values from character/NPC nodes (Cyberpunk RED compatible)
 local function getStatValueSafe(nodeActor, sStatName)
     if not nodeActor then return 0 end
@@ -1109,6 +1127,9 @@ function onRollSkill(rSource, rTarget, rRoll)
 	end
 
 	if rSource and rRoll and ActionsManager.doesRollHaveDice(rRoll) then
+		if isExplodingOrFumblingRoll(rRoll) then
+			return
+		end
 		if isStealthSkillRoll(rRoll.sDesc) then
 			displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
 		elseif isPerceptionSkillRoll(rRoll.sDesc) then

@@ -358,16 +358,35 @@ async function runTests() {
     `);
 
     await runAssert(
+        "onRollSkill skips primary roll of 10",
+        null,
+        `
+            USER_ISHOST = true
+            local rSource = createMockNode({ recordType = "pc" })
+            mockActiveCT = rSource
+            lastEffectAdded = nil
+            local rRoll = {
+                sType = "skillroll",
+                sDesc = "Stealth Check",
+                aDice = { { type = "d10", result = 10 } }
+            }
+            onRollSkill(rSource, nil, rRoll)
+            return lastEffectAdded and lastEffectAdded.sName
+        `
+    );
+
+    await runAssert(
         "onRollSkill processes exploding critRoll correctly",
         "Stealth: 16",
         `
             USER_ISHOST = true
             local rSource = createMockNode({ recordType = "pc" })
             mockActiveCT = rSource
+            lastEffectAdded = nil
             local rRoll = {
                 sType = "critRoll",
                 sDesc = "Stealth Check [Critical Success]",
-                aDice = { { result = 6 } }
+                aDice = { { type = "d10", result = 6 } }
             }
             onRollSkill(rSource, nil, rRoll)
             return lastEffectAdded and lastEffectAdded.sName
