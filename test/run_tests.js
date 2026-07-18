@@ -130,8 +130,16 @@ async function runTests() {
         function OptionsManager.getOption(key) return "off" end
         function OptionsManager.isOption(key, val) return false end
         
-        -- Mock register callbacks to avoid crashes on load
-        function ActionsManager.registerResultHandler() end
+        -- Mock register callbacks to avoid crashes on load. registerResultHandler/getResultHandler
+        -- share a real backing table (not no-ops) so tests can verify onInit()'s handler-capture
+        -- behavior, including the double-init self-reference regression (see GROUP N below).
+        ActionsManager.aHandlers = {}
+        function ActionsManager.registerResultHandler(sType, fHandler)
+            ActionsManager.aHandlers[sType] = fHandler
+        end
+        function ActionsManager.getResultHandler(sType)
+            return ActionsManager.aHandlers[sType]
+        end
         function ActionsManager.registerPostRollHandler() end
         function OOBManager.registerOOBMsgHandler() end
         function Comm.registerSlashHandler() end
@@ -186,8 +194,10 @@ async function runTests() {
     await runAssert("isDexterityCheckRoll('Dex check')", true, "return isDexterityCheckRoll('Dex check')");
     await runAssert("isDexterityCheckRoll('Intelligence')", false, "return isDexterityCheckRoll('Intelligence')");
     
-    await runAssert("isPerceptionSkillRoll('Perception check')", true, "return isPerceptionSkillRoll('Perception check')");
+    await runAssert("isPerceptionSkillRoll('[Skill] Perception(5)')", true, "return isPerceptionSkillRoll('[Skill] Perception(5)')");
     await runAssert("isPerceptionSkillRoll('Stealth')", false, "return isPerceptionSkillRoll('Stealth')");
+    // Regression: "Human Perception" is a distinct CPR skill and must NOT be treated as "Perception".
+    await runAssert("isPerceptionSkillRoll('[Skill] Human Perception(3)') excludes Human Perception", false, "return isPerceptionSkillRoll('[Skill] Human Perception(3)')");
 
     // --- GROUP D: Character / Actor Checks ---
     await lua.doString(`
@@ -398,6 +408,48 @@ async function runTests() {
             }
             onRollSkill(rSource, nil, rRoll)
             return lastEffectAdded and lastEffectAdded.sName
+        `
+    );
+
+    // --- GROUP N: onInit() Idempotency (Stack Overflow Regression) ---
+    // Regression test for a real reported bug: a second onInit() call (e.g. from a script/extension
+    // reload without restarting FGU) used to re-capture the extension's own onRollAttack/onRollSkill
+    // wrappers as the "original" ruleset handler in aOriginalResultHandlers, so every subsequent
+    // roll dispatched to e.g. onRollAttack, which called "the original" (itself) and recursed
+    // forever, overflowing the Lua stack. onInit() was already called once above (GROUP M setup).
+    await runAssert(
+        "aOriginalResultHandlers['attack'] unchanged after a second onInit() call",
+        true,
+        `
+            local before = aOriginalResultHandlers["attack"]
+            onInit() -- second call; must be a no-op due to the init guard
+            local after = aOriginalResultHandlers["attack"]
+            return before == after
+        `
+    );
+    await runAssert(
+        "aOriginalResultHandlers['attack'] is never onRollAttack itself",
+        true,
+        "return aOriginalResultHandlers[\"attack\"] ~= onRollAttack"
+    );
+    await runAssert(
+        "aOriginalResultHandlers['skillroll'] is never onRollSkill itself",
+        true,
+        "return aOriginalResultHandlers[\"skillroll\"] ~= onRollSkill"
+    );
+
+    // --- GROUP O: Attack Roll Type Dispatch Routing (case-sensitivity regression) ---
+    // "classrollAttack" (capital A) must route to onRollAttack, not onRollSkill - a previous
+    // case-sensitive pattern match ("attack" vs "Attack") silently misrouted it. Checked in a single
+    // round trip (rather than one doString per assertion) to avoid wasmoon cross-call flakiness
+    // observed when repeatedly comparing function references pulled from ActionsManager.aHandlers.
+    await runAssert(
+        "attack roll types route to the correct handler (classrollAttack/attack -> onRollAttack, skillroll -> onRollSkill)",
+        true,
+        `
+            return ActionsManager.aHandlers["classrollAttack"] == onRollAttack
+                and ActionsManager.aHandlers["attack"] == onRollAttack
+                and ActionsManager.aHandlers["skillroll"] == onRollSkill
         `
     );
 

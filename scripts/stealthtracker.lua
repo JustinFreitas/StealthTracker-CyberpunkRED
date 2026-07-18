@@ -43,7 +43,9 @@ VISIBLE = "visible"
 STEALTH_EFFECT_MODIFIERS = {}
 
 local ActionSkill_onRoll_Original, CombatManager_onDrop, CombatManager_requestActivation
+local bStealthTrackerInitialized = false
 aOriginalResultHandlers = {}
+local aProcessingRolls = {}
 
 -- Helper to safely check if a string is blank
 local function isBlankSafe(s)
@@ -271,6 +273,13 @@ local function getResultHandlerSafe(sType)
 end
 
 function onInit()
+	-- Guard against onInit() running more than once in the same session (e.g. a script/extension
+	-- reload during development). Without this, a second pass would capture our own onRollSkill/
+	-- onRollAttack wrappers (installed by the first pass) as the "original" ruleset handler, which
+	-- then call themselves forever on every roll and blow the Lua call stack.
+	if bStealthTrackerInitialized then return end
+	bStealthTrackerInitialized = true
+
 	LOCALIZED_DEXTERITY = "DEX"
 	LOCALIZED_DEXTERITY_LOWER = LOCALIZED_DEXTERITY:lower()
 	LOCALIZED_STEALTH = "Stealth"
@@ -284,16 +293,19 @@ function onInit()
         ActionSkill.onRoll = onInitiateSkill
     end
 
-    local aRollTypes = { "skillroll", "classroll", "classrollAttack", "skill", "cyberpunk_skill", "skill_roll", "attack", "cyberpunk_attack", "attack_roll", "critRoll", "critSkillRoll" }
+    -- Roll types actually registered by the CyberpunkRED ruleset (CommonRolls.lua). Note "attack"
+    -- resolves to the same underlying ruleset function as "skillroll"/"classroll" - this ruleset has
+    -- no distinct attack handler.
+    local aRollTypes = { "skillroll", "classroll", "classrollAttack", "attack", "critRoll", "critSkillRoll" }
 
     -- Capture ruleset result handlers from ActionsManager (Host and Client)
-    local fSkillFallback = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll") or getResultHandlerSafe("skill")
-    local fAttackFallback = getResultHandlerSafe("attack") or getResultHandlerSafe("cyberpunk_attack") or getResultHandlerSafe("attack_roll")
+    local fSkillFallback = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll")
+    local fAttackFallback = getResultHandlerSafe("attack")
 
     for _, sType in ipairs(aRollTypes) do
         local fHandler = getResultHandlerSafe(sType)
         if not fHandler then
-            if sType:match("attack") then
+            if sType:lower():match("attack") then
                 fHandler = fAttackFallback
             else
                 fHandler = fSkillFallback
@@ -355,7 +367,7 @@ function onInit()
 
 	-- Register our handlers globally via ActionsManager
 	for _, sType in ipairs(aRollTypes) do
-		if sType:match("attack") then
+		if sType:lower():match("attack") then
 			ActionsManager.registerResultHandler(sType, onRollAttack)
 		else
 			ActionsManager.registerResultHandler(sType, onRollSkill)
@@ -998,7 +1010,9 @@ end
 function isPerceptionSkillRoll(sRollData)
 	if not sRollData then return false end
 	local sLower = sRollData:lower()
-	return sLower:match("perception") ~= nil
+	-- Anchor to the "[Skill] " tag so "perception" must be the skill name itself, not a substring
+	-- of another skill like "Human Perception".
+	return sLower:match("%[skill%]%s*perception") ~= nil
 end
 
 function isStealthTrackerDisabledForActor(nodeCTActor)
@@ -1123,6 +1137,12 @@ function onInitiateSkill(rSource, rTarget, rRoll)
 end
 
 function onRollAttack(rSource, rTarget, rRoll)
+	-- Re-entrancy guard: if this exact roll is somehow dispatched back through our own handler
+	-- while we're still processing it, skip instead of recursing.
+	local sKey = rRoll and rRoll.sUniqueValue and tostring(rRoll.sUniqueValue)
+	if sKey and aProcessingRolls[sKey] then return end
+	if sKey then aProcessingRolls[sKey] = true end
+
 	local sType = rRoll and rRoll.sType
 	local fOriginal = sType and aOriginalResultHandlers[sType]
 	if type(fOriginal) == "function" then
@@ -1134,9 +1154,17 @@ function onRollAttack(rSource, rTarget, rRoll)
 	end
 
 	displayProcessAttackFromStealth(rSource, rTarget)
+
+	if sKey then aProcessingRolls[sKey] = nil end
 end
 
 function onRollSkill(rSource, rTarget, rRoll)
+	-- Re-entrancy guard: if this exact roll is somehow dispatched back through our own handler
+	-- while we're still processing it, skip instead of recursing.
+	local sKey = rRoll and rRoll.sUniqueValue and tostring(rRoll.sUniqueValue)
+	if sKey and aProcessingRolls[sKey] then return end
+	if sKey then aProcessingRolls[sKey] = true end
+
 	local sType = rRoll and rRoll.sType
 	local fOriginal = sType and aOriginalResultHandlers[sType]
 	if type(fOriginal) == "function" then
@@ -1147,6 +1175,7 @@ function onRollSkill(rSource, rTarget, rRoll)
 
 	if rSource and rProcessedRoll and ActionsManager.doesRollHaveDice(rProcessedRoll) then
 		if isExplodingOrFumblingRoll(rRoll) then
+			if sKey then aProcessingRolls[sKey] = nil end
 			return
 		end
 		if isStealthSkillRoll(rProcessedRoll.sDesc) then
@@ -1155,6 +1184,8 @@ function onRollSkill(rSource, rTarget, rRoll)
 			displayProcessActivePerception(rSource, rProcessedRoll)
 		end
 	end
+
+	if sKey then aProcessingRolls[sKey] = nil end
 end
 
 function processChatCommand(_, sParams)
