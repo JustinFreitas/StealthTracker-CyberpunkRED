@@ -11,7 +11,7 @@ This extension monitors PC and NPC Stealth rolls, records their stealth score as
 1. **Automated Stealth Tracking**:
    * When an actor rolls a **Stealth** check, the total result is automatically tracked as a Combat Tracker (CT) effect: `Stealth: [Total]`.
 2. **Active Perception vs. Tracked Stealth**:
-   * When a player or NPC rolls an active **Perception** check, the extension automatically compares the roll against all hiding enemies in the Combat Tracker and reports exactly who is spotted (e.g. `GUARD A SPOTTED Player B! (Perception roll 14 >= Stealth 12)`).
+   * When a player or NPC rolls an active **Perception** check, the extension automatically compares the roll against all hiding enemies in the Combat Tracker and reports exactly who is spotted (e.g. `GUARD A SPOTTED Player B! (Perception roll 14 vs Stealth 12)`).
 3. **Turn-Start Awareness Summaries**:
    * On an actor's turn start in the Combat Tracker, the extension evaluates their **Base Awareness** (`10 + INT + Perception Skill Level`) against all hiding opponents, notifying the GM in chat who they perceive or miss.
 4. **Stealth Expiration**:
@@ -43,4 +43,31 @@ StealthTracker adds a dedicated settings group under the GM Options window:
 
 Run the build script in the `/build` folder to package the files into a `.ext` file:
 1. Run [build-stealthtracker-zip.bat](file:///C:/code/StealthTracker-CyberpunkRED/build/build-stealthtracker-zip.bat).
-2. Move the generated `StealthTracker.ext` file into your Fantasy Grounds Unity `extensions` directory.
+2. Move the generated `CyberpunkRED-StealthTracker.ext` file into your Fantasy Grounds Unity `extensions` directory.
+
+---
+
+## Changelog
+
+### v1.0.5
+* Fixed a `FormattedText SetValue XML Error` that fired on every Perception roll (a raw `<` character in the "did not spot" message broke FGU's chat XML rendering). Chat text is now also escaped defensively against this class of error.
+* Fixed attack rolls silently producing no chat output at all. The extension previously replaced the ruleset's own roll handlers and called a captured "original" handler; if that capture ever pointed back at itself (e.g. the extension enabled twice), rolls either crashed with a stack overflow or were swallowed entirely. StealthTracker now only *observes* rolls after the ruleset has fully resolved and displayed them, so it can no longer interfere with roll output.
+* Added a hint - "No range to target (are both tokens on the map?)" - when a targeted ranged/thrown attack resolves with no measurable range (both combatants need tokens on an open map for ranged DV to be calculated).
+* Fixed critical attack rolls (natural 10) producing two "Target hidden" messages instead of one.
+* Fixed Solo characters with Fumble Recovery (rank 4) getting no Stealth processing at all on a recovered fumble.
+
+### v1.0.4
+* Fixed "Human Perception" rolls being incorrectly treated as Perception checks (false-triggered active-perception processing).
+* Fixed a Lua stack overflow on attack rolls caused by re-initializing on a script/extension reload.
+
+### v1.0.3
+* Correctly parse the previous roll's JSON to resolve combined roll details when critical rolls land.
+
+### v1.0.2
+* Skip Stealth updates on the initial exploding/fumbling die and wait for the critical roll's final total instead.
+
+### v1.0.1
+* Fixed exploding/fumbling dice incorrectly updating the Stealth value shown in the Combat Tracker.
+
+### v1.0
+* Initial public release for the Cyberpunk RED ruleset (adapted from the 5E StealthTracker extension).
