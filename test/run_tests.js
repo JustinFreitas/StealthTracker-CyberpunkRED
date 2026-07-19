@@ -526,6 +526,14 @@ async function runTests() {
             fCritSlot(rSource, nil, rCritContinuation)
             check("crit-attack-combined-deduped", nAttackObserved == 3)
 
+            -- Solo Fumble Recovery: a natural 1 tagged "[Fumble recovery]" by the ruleset gets no
+            -- continuation die, so it is final and must be processed now; an untagged natural 1
+            -- still waits for the fumble continuation.
+            fAttackSlot(rSource, nil, { sType = "attack", sUniqueValue = "u107", sDesc = "[Attack] X\\r\\n[Fumble recovery]", aDice = { { type = "d10", result = 1 } } })
+            check("fumble-recovery-attack-processed", nAttackObserved == 4)
+            fAttackSlot(rSource, nil, { sType = "attack", sUniqueValue = "u108", aDice = { { type = "d10", result = 1 } } })
+            check("plain-fumble-attack-skipped", nAttackObserved == 4)
+
             -- No-range hint: ranged/thrown attacks that resolved without a DV (rRoll.nTarget nil,
             -- e.g. tokens not on a map) emit a hint; attacks with a DV, and melee, do not.
             local aHints = {}

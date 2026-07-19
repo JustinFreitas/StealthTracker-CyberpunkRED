@@ -93,7 +93,16 @@ local function isExplodingOrFumblingRoll(rRoll)
 	if rRoll.aDice and #rRoll.aDice > 0 then
 		local firstDie = rRoll.aDice[1]
 		if firstDie then
-			if firstDie.result == 10 or firstDie.result == 1 then
+			if firstDie.result == 10 then
+				return true
+			end
+			if firstDie.result == 1 then
+				-- Solo Fumble Recovery cancels the fumble: the ruleset tags the roll's desc (before
+				-- our post-resolve observer runs) and never throws a continuation die, so the roll
+				-- is final and must be processed now rather than waiting for a continuation.
+				if rRoll.sDesc and rRoll.sDesc:match("%[Fumble recovery%]") then
+					return false
+				end
 				return true
 			end
 		end
