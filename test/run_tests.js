@@ -508,6 +508,38 @@ async function runTests() {
 
             -- The pre-existing "attack" hook (registered before onInit) must still be called.
             check("pre-existing-hook-chained", prevPostResolveCalls == 2)
+
+            -- Crit attacks emit ONE message per logical attack: the initial exploding roll is
+            -- skipped, and the combined crit continuation ("critRoll" carrying the attack in
+            -- sPrevRoll) is processed exactly once, deduped on the original sUniqueValue.
+            fAttackSlot(rSource, nil, { sType = "attack", sUniqueValue = "u103", aDice = { { type = "d10", result = 10 } } })
+            check("exploding-attack-initial-skipped", nAttackObserved == 2)
+            local fCritSlot = GameManager.getMultiKeyFunction("onActionPostResolve", "critRoll")
+            local rCritContinuation = {
+                sType = "critRoll",
+                sDesc = "+ 1d10 [Critical Success]",
+                aDice = { { type = "d10", result = 6 } },
+                sPrevRoll = '{"sType":"attack","sDesc":"[Attack] Weapon: Assault Rifle","aDice":[{"type":"d10","result":10}],"nMod":0,"sUniqueValue":"u103"}'
+            }
+            fCritSlot(rSource, nil, rCritContinuation)
+            check("crit-attack-combined-processed-once", nAttackObserved == 3)
+            fCritSlot(rSource, nil, rCritContinuation)
+            check("crit-attack-combined-deduped", nAttackObserved == 3)
+
+            -- No-range hint: ranged/thrown attacks that resolved without a DV (rRoll.nTarget nil,
+            -- e.g. tokens not on a map) emit a hint; attacks with a DV, and melee, do not.
+            local aHints = {}
+            local fRealDisplayChatMessage = displayChatMessage
+            displayChatMessage = function(sText) table.insert(aHints, sText) end
+            local rTargetNode = createMockNode({ recordType = "npc" })
+            fAttackSlot(rSource, rTargetNode, { sType = "attack", sUniqueValue = "u104", nIsThrown = 1, aDice = { { type = "d10", result = 5 } } })
+            check("no-range-hint-emitted", #aHints == 1 and aHints[1] == ST_NO_RANGE_HINT)
+            fAttackSlot(rSource, rTargetNode, { sType = "attack", sUniqueValue = "u105", nIsThrown = 1, nTarget = 16, aDice = { { type = "d10", result = 5 } } })
+            check("no-hint-when-dv-known", #aHints == 1)
+            fAttackSlot(rSource, rTargetNode, { sType = "attack", sUniqueValue = "u106", aDice = { { type = "d10", result = 5 } } })
+            check("no-hint-for-melee", #aHints == 1)
+            displayChatMessage = fRealDisplayChatMessage
+
             displayProcessAttackFromStealth = fRealDisplayAttack
 
             -- 5. Skill observer routes skillroll to stealth processing.

@@ -21,6 +21,7 @@ ON = "on"
 OOB_MSGTYPE_UPDATESTEALTH = "updatestealth"
 OOB_MSGTYPE_ATTACKFROMSTEALTH = "attackfromstealth"
 SECRET = true
+ST_NO_RANGE_HINT = "No range to target (are both tokens on the map?)"
 ST_STEALTH_DISABLED_OUT_OF_FORMAT = "Stealth processing disabled when out of %s."
 STEALTHTRACKER_ALLOW_OUT_OF = "STEALTHTRACKER_ALLOW_OUT_OF"
 STEALTHTRACKER_AWARE = "STEALTHTRACKER_AWARE"
@@ -1078,6 +1079,22 @@ function isPerceptionSkillRoll(sRollData)
 	return sLower:match("%[skill%]%s*perception") ~= nil
 end
 
+-- Ranged (or thrown) attacks resolve against a static DV looked up by token range; melee resolves
+-- via the contested Evasion flow instead and never carries a range-based DV.
+function isRangedAttackRoll(rRoll)
+	if not rRoll then return false end
+	local sType = tostring(rRoll.sType or ""):lower()
+	if not sType:match("attack") then return false end
+	if tonumber(rRoll.nIsThrown or 0) == 1 then return true end
+	if rRoll.sWeaponPath and DB.findNode then
+		local nodeWeapon = DB.findNode(rRoll.sWeaponPath)
+		if nodeWeapon and DB.getValue(nodeWeapon, "gearType", "") == "item_ranged" then
+			return true
+		end
+	end
+	return false
+end
+
 function isStealthTrackerDisabledForActor(nodeCTActor)
 	if not nodeCTActor then return false end
 	local sSenses = DB.getText(nodeCTActor, "senses", ""):lower()
@@ -1199,9 +1216,9 @@ function onInitiateSkill(rSource, rTarget, rRoll)
     end
 end
 
--- Post-resolve observer for attack-type rolls. Runs AFTER the ruleset's own result handler has
--- fully resolved the roll and produced its chat output - it never calls or replaces that handler.
-function onRollAttack(rSource, rTarget, rRoll)
+-- Shared attack processing, called with the FINAL roll for a logical attack: the initial roll for
+-- normal attacks, or the combined roll when a crit continuation lands.
+function processAttackRoll(rSource, rTarget, rRoll)
 	local sKey = getRollProcessingKey("attack", rTarget, rRoll)
 	if sKey then
 		if aProcessedRollKeys[sKey] then return end
@@ -1212,7 +1229,25 @@ function onRollAttack(rSource, rTarget, rRoll)
 		displayTowerRoll()
 	end
 
+	-- Ranged attacks resolve against a DV derived from token range; if the ruleset couldn't
+	-- determine a range (rRoll.nTarget stays nil), it silently prints the bare roll with no
+	-- Hit/Miss line - surface a hint so it doesn't read as a broken roll.
+	if rTarget and rRoll and rRoll.nTarget == nil and isRangedAttackRoll(rRoll) then
+		displayChatMessage(ST_NO_RANGE_HINT, SECRET)
+	end
+
 	displayProcessAttackFromStealth(rSource, rTarget)
+end
+
+-- Post-resolve observer for attack-type rolls. Runs AFTER the ruleset's own result handler has
+-- fully resolved the roll and produced its chat output - it never calls or replaces that handler.
+function onRollAttack(rSource, rTarget, rRoll)
+	-- An initial exploding (10) or fumbling (1) attack roll is not final - the ruleset throws a
+	-- crit continuation (critRoll) that carries the combined result, and processing happens there
+	-- (see onRollSkill). Processing both would emit duplicate stealth messages per crit attack.
+	if isExplodingOrFumblingRoll(rRoll) then return end
+
+	processAttackRoll(rSource, rTarget, rRoll)
 end
 
 -- Post-resolve observer for skill-type rolls (including the crit continuation rolls). Runs AFTER
@@ -1220,6 +1255,15 @@ end
 function onRollSkill(rSource, rTarget, rRoll)
 	local rProcessedRoll = getCombinedRoll(rRoll)
 	if not rSource or not rProcessedRoll or not ActionsManager.doesRollHaveDice(rProcessedRoll) then return end
+
+	-- A crit continuation of an ATTACK arrives as "critRoll" with the original attack roll in
+	-- sPrevRoll; the combined roll is the attack's final result, so process it as an attack here
+	-- (the initial exploding/fumbling attack roll was skipped in onRollAttack).
+	local sProcessedType = tostring(rProcessedRoll.sType or ""):lower()
+	if sProcessedType:match("attack") then
+		processAttackRoll(rSource, rTarget, rProcessedRoll)
+		return
+	end
 
 	-- An initial exploding (10) or fumbling (1) roll is not final - the crit continuation roll
 	-- (critRoll/critSkillRoll) carries the combined result and is processed instead.
