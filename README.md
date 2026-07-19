@@ -39,11 +39,21 @@ StealthTracker adds a dedicated settings group under the GM Options window:
 
 ---
 
-## Installation & Build
+## Installation
 
-Run the build script in the `/build` folder to package the files into a `.ext` file:
-1. Run [build-stealthtracker-zip.bat](file:///C:/code/StealthTracker-CyberpunkRED/build/build-stealthtracker-zip.bat).
+> **Fantasy Grounds Unity (FGU) only.** This extension is not compatible with Fantasy Grounds Classic (FGC).
+
+### Recommended: Fantasy Grounds Forge
+
+Search for **"Cyberpunk RED StealthTracker"** in the Forge within Fantasy Grounds Unity and install it from there. Forge handles placing the extension in the correct folder and keeps it updated automatically.
+
+### Manual / Developer Build
+
+If you're building from source instead of using Forge:
+1. Run [build-stealthtracker-zip.bat](file:///C:/code/StealthTracker-CyberpunkRED/build/build-stealthtracker-zip.bat) in the `/build` folder to package the files into a `.ext` file.
 2. Move the generated `CyberpunkRED-StealthTracker.ext` file into your Fantasy Grounds Unity `extensions` directory.
+
+Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Extensions window when loading a Cyberpunk RED campaign.
 
 ---
 
