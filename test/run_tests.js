@@ -131,8 +131,8 @@ async function runTests() {
         function OptionsManager.isOption(key, val) return false end
         
         -- Mock register callbacks to avoid crashes on load. registerResultHandler/getResultHandler
-        -- share a real backing table (not no-ops) so tests can verify onInit()'s handler-capture
-        -- behavior, including the double-init self-reference regression (see GROUP N below).
+        -- share a real backing table (not no-ops) so tests can verify that onInit() leaves the
+        -- ruleset's registered result handlers untouched (see GROUP N below).
         ActionsManager.aHandlers = {}
         function ActionsManager.registerResultHandler(sType, fHandler)
             ActionsManager.aHandlers[sType] = fHandler
@@ -143,6 +143,29 @@ async function runTests() {
         function ActionsManager.registerPostRollHandler() end
         function OOBManager.registerOOBMsgHandler() end
         function Comm.registerSlashHandler() end
+
+        -- Simulate the CyberpunkRED ruleset registering its own result handlers (CommonRolls.lua
+        -- routes "attack"/"skillroll"/"classroll"/"classrollAttack" to the same function).
+        function mockRulesetOnSkillRoll() end
+        function mockRulesetOnCritRoll() end
+        ActionsManager.registerResultHandler("skillroll", mockRulesetOnSkillRoll)
+        ActionsManager.registerResultHandler("classroll", mockRulesetOnSkillRoll)
+        ActionsManager.registerResultHandler("classrollAttack", mockRulesetOnSkillRoll)
+        ActionsManager.registerResultHandler("attack", mockRulesetOnSkillRoll)
+        ActionsManager.registerResultHandler("critRoll", mockRulesetOnCritRoll)
+        ActionsManager.registerResultHandler("critSkillRoll", mockRulesetOnCritRoll)
+
+        -- Mock the CoreRPG GameManager layered hook registry (single slot per key/subkey), which
+        -- ActionsManager.resolveAction invokes as onActionPostResolve after the result handler.
+        GameManager = {}
+        GameManager.aMultiKey = {}
+        function GameManager.setMultiKeyFunction(sKey, sSubKey, fn)
+            GameManager.aMultiKey[sKey] = GameManager.aMultiKey[sKey] or {}
+            GameManager.aMultiKey[sKey][sSubKey or ""] = fn
+        end
+        function GameManager.getMultiKeyFunction(sKey, sSubKey)
+            return GameManager.aMultiKey[sKey] and GameManager.aMultiKey[sKey][sSubKey or ""]
+        end
     `);
 
     // 2. Load the actual StealthTracker script
@@ -365,13 +388,15 @@ async function runTests() {
             lastEffectAdded = rEffect
         end
 
-        -- Run onInit to register everything and populate aOriginalResultHandlers
-        onInit()
+        -- Simulate another extension already occupying the "attack" onActionPostResolve slot, to
+        -- verify onInit() chains it rather than clobbering it.
+        prevPostResolveCalls = 0
+        GameManager.setMultiKeyFunction("onActionPostResolve", "attack", function()
+            prevPostResolveCalls = prevPostResolveCalls + 1
+        end)
 
-        -- Mock ruleset original handler for critRoll
-        aOriginalResultHandlers["critRoll"] = function(rSource, rTarget, rRoll)
-            rRoll.nMod = 10 -- original roll of 10
-        end
+        -- Run onInit to register the post-resolve observers
+        onInit()
     `);
 
     await runAssert(
@@ -411,46 +436,139 @@ async function runTests() {
         `
     );
 
-    // --- GROUP N: onInit() Idempotency (Stack Overflow Regression) ---
-    // Regression test for a real reported bug: a second onInit() call (e.g. from a script/extension
-    // reload without restarting FGU) used to re-capture the extension's own onRollAttack/onRollSkill
-    // wrappers as the "original" ruleset handler in aOriginalResultHandlers, so every subsequent
-    // roll dispatched to e.g. onRollAttack, which called "the original" (itself) and recursed
-    // forever, overflowing the Lua stack. onInit() was already called once above (GROUP M setup).
+    // --- GROUP N: v1.0.5 Observer Architecture Regression Suite ---
+    // Regression tests for a real reported bug: the extension used to REPLACE the ruleset's
+    // registered result handlers and call a captured "original". Any capture problem (e.g. two
+    // copies of the extension enabled at once) made the captured "original" the extension's own
+    // wrapper - infinite recursion (stack overflow) in v1.0.3, and in v1.0.4 the re-entrancy guard
+    // returned early instead, so attack rolls resolved to NOTHING (no chat output at all).
+    // v1.0.5 observes rolls via GameManager's onActionPostResolve hook and must leave the ruleset's
+    // result handlers completely untouched.
+    //
+    // Also covers the FormattedText regression: chat text containing a raw "<" (e.g. the old
+    // "(Perception roll 4 < Stealth 12)" message) breaks the FormattedText control with
+    // "XML Error: Name cannot begin with the ' ' character, hexadecimal value 0x20".
+    //
+    // All sub-checks run in a SINGLE doString round trip: the wasmoon engine degrades after ~50
+    // doString calls (global-environment lookups start failing with "attempt to index a nil value
+    // (upvalue '_ENV')"), so batching is required, not just a nicety.
     await runAssert(
-        "aOriginalResultHandlers['attack'] unchanged after a second onInit() call",
-        true,
+        "v1.0.5 observer suite (handlers untouched, observers installed, idempotent init, routing, chaining, dedupe, chat XML safety) - failures",
+        "",
         `
-            local before = aOriginalResultHandlers["attack"]
-            onInit() -- second call; must be a no-op due to the init guard
-            local after = aOriginalResultHandlers["attack"]
-            return before == after
+            local aFailures = {}
+            local function check(sName, bCondition)
+                if not bCondition then table.insert(aFailures, sName) end
+            end
+
+            -- 1. onInit() must leave all ruleset result handlers untouched.
+            check("handlers-untouched",
+                ActionsManager.aHandlers["attack"] == mockRulesetOnSkillRoll
+                and ActionsManager.aHandlers["classrollAttack"] == mockRulesetOnSkillRoll
+                and ActionsManager.aHandlers["skillroll"] == mockRulesetOnSkillRoll
+                and ActionsManager.aHandlers["classroll"] == mockRulesetOnSkillRoll
+                and ActionsManager.aHandlers["critRoll"] == mockRulesetOnCritRoll
+                and ActionsManager.aHandlers["critSkillRoll"] == mockRulesetOnCritRoll)
+
+            -- 2. onActionPostResolve observers installed for all six roll types.
+            local bAllInstalled = true
+            for _, sType in ipairs({ "skillroll", "classroll", "classrollAttack", "attack", "critRoll", "critSkillRoll" }) do
+                if type(GameManager.getMultiKeyFunction("onActionPostResolve", sType)) ~= "function" then
+                    bAllInstalled = false
+                end
+            end
+            check("observers-installed", bAllInstalled)
+
+            -- 3. A second onInit() call is a no-op (init guard) - observers not re-chained.
+            local fBefore = GameManager.getMultiKeyFunction("onActionPostResolve", "attack")
+            onInit()
+            check("double-init-noop", fBefore == GameManager.getMultiKeyFunction("onActionPostResolve", "attack"))
+
+            -- 4. Observer routing/chaining/dedupe. Routing is verified behaviorally (the observers
+            -- are wrapped in registration closures, so function identity can't be compared): the
+            -- observers look up the display* globals at call time, so overriding those globals
+            -- detects which observer ran.
+            local nAttackObserved = 0
+            local fRealDisplayAttack = displayProcessAttackFromStealth
+            displayProcessAttackFromStealth = function() nAttackObserved = nAttackObserved + 1 end
+
+            local fAttackSlot = GameManager.getMultiKeyFunction("onActionPostResolve", "attack")
+            local fClassAttackSlot = GameManager.getMultiKeyFunction("onActionPostResolve", "classrollAttack")
+            local rSource = createMockNode({ recordType = "pc" })
+
+            -- "classrollAttack" (capital A) must route to the attack observer - a previous
+            -- case-sensitive match silently misrouted it.
+            fClassAttackSlot(rSource, nil, { sType = "classrollAttack", sUniqueValue = "u100", aDice = { { type = "d10", result = 5 } } })
+            check("classrollAttack-routes-to-attack-observer", nAttackObserved == 1)
+
+            -- Same logical roll observed twice (e.g. extension enabled twice) processes once.
+            fAttackSlot(rSource, nil, { sType = "attack", sUniqueValue = "u101", aDice = { { type = "d10", result = 5 } } })
+            fAttackSlot(rSource, nil, { sType = "attack", sUniqueValue = "u101", aDice = { { type = "d10", result = 5 } } })
+            check("attack-dedupe", nAttackObserved == 2)
+
+            -- The pre-existing "attack" hook (registered before onInit) must still be called.
+            check("pre-existing-hook-chained", prevPostResolveCalls == 2)
+            displayProcessAttackFromStealth = fRealDisplayAttack
+
+            -- 5. Skill observer routes skillroll to stealth processing.
+            local nSkillObserved = 0
+            local fRealDisplayStealthUpdate = displayProcessStealthUpdateForSkillHandlers
+            displayProcessStealthUpdateForSkillHandlers = function() nSkillObserved = nSkillObserved + 1 end
+            local fSkillSlot = GameManager.getMultiKeyFunction("onActionPostResolve", "skillroll")
+            fSkillSlot(rSource, nil, { sType = "skillroll", sDesc = "Stealth Check", sUniqueValue = "u102", aDice = { { type = "d10", result = 5 } } })
+            check("skillroll-routes-to-skill-observer", nSkillObserved == 1)
+            displayProcessStealthUpdateForSkillHandlers = fRealDisplayStealthUpdate
+
+            -- 6. displayChatMessage escapes "<" and omits empty mode.
+            local lastChatMessage = nil
+            local fRealAddChatMessage = Comm.addChatMessage
+            Comm.addChatMessage = function(msg) lastChatMessage = msg end
+            local fRealGetOption = OptionsManager.getOption
+            OptionsManager.getOption = function(key)
+                if key == "STEALTHTRACKER_FRAME_STYLE" then return "none" end
+                return "off"
+            end
+            displayChatMessage("a < b", true)
+            check("chat-escapes-lt", lastChatMessage ~= nil and lastChatMessage.text == "a &lt; b")
+            check("chat-omits-empty-mode", lastChatMessage ~= nil and lastChatMessage.mode == nil)
+
+            -- 7. displayChatMessage sets mode when a frame style is chosen.
+            OptionsManager.getOption = function(key)
+                if key == "STEALTHTRACKER_FRAME_STYLE" then return "story" end
+                return "off"
+            end
+            displayChatMessage("hello", true)
+            check("chat-sets-chosen-mode", lastChatMessage ~= nil and lastChatMessage.mode == "story")
+            Comm.addChatMessage = fRealAddChatMessage
+            OptionsManager.getOption = fRealGetOption
+
+            return table.concat(aFailures, ",")
         `
-    );
-    await runAssert(
-        "aOriginalResultHandlers['attack'] is never onRollAttack itself",
-        true,
-        "return aOriginalResultHandlers[\"attack\"] ~= onRollAttack"
-    );
-    await runAssert(
-        "aOriginalResultHandlers['skillroll'] is never onRollSkill itself",
-        true,
-        "return aOriginalResultHandlers[\"skillroll\"] ~= onRollSkill"
     );
 
-    // --- GROUP O: Attack Roll Type Dispatch Routing (case-sensitivity regression) ---
-    // "classrollAttack" (capital A) must route to onRollAttack, not onRollSkill - a previous
-    // case-sensitive pattern match ("attack" vs "Attack") silently misrouted it. Checked in a single
-    // round trip (rather than one doString per assertion) to avoid wasmoon cross-call flakiness
-    // observed when repeatedly comparing function references pulled from ActionsManager.aHandlers.
-    await runAssert(
-        "attack roll types route to the correct handler (classrollAttack/attack -> onRollAttack, skillroll -> onRollSkill)",
-        true,
-        `
-            return ActionsManager.aHandlers["classrollAttack"] == onRollAttack
-                and ActionsManager.aHandlers["attack"] == onRollAttack
-                and ActionsManager.aHandlers["skillroll"] == onRollSkill
-        `
+    // --- GROUP Q: Static source checks ---
+    // No chat-bound string may contain a raw "<" (breaks FormattedText rendering, see GROUP P).
+    function runStaticAssert(name, condition) {
+        if (condition) {
+            console.log(`  ✓ PASS: ${name}`);
+            testsPassed++;
+        } else {
+            console.error(`  ✗ FAIL: ${name}`);
+            testsFailed++;
+        }
+    }
+    const luaStringLiterals = luaCode.match(/"(?:[^"\\]|\\.)*"/g) || [];
+    // Exempt '"<"' itself - it's the gsub pattern used to escape chat text.
+    const literalsWithRawLt = luaStringLiterals.filter(s => s.includes("<") && !s.includes("&lt;") && s !== '"<"');
+    runStaticAssert(
+        `no Lua string literal contains a raw '<' (found: ${literalsWithRawLt.join(", ") || "none"})`,
+        literalsWithRawLt.length === 0
+    );
+    runStaticAssert(
+        "perception comparison messages use 'vs' wording",
+        luaCode.includes("(Perception roll %d vs Stealth %d)") &&
+        !luaCode.includes("(Perception roll %d >= Stealth %d)") &&
+        !luaCode.includes("(Perception roll %d < Stealth %d)")
     );
 
     // 4. Print Summary

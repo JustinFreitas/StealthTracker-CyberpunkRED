@@ -44,8 +44,32 @@ STEALTH_EFFECT_MODIFIERS = {}
 
 local ActionSkill_onRoll_Original, CombatManager_onDrop, CombatManager_requestActivation
 local bStealthTrackerInitialized = false
-aOriginalResultHandlers = {}
-local aProcessingRolls = {}
+
+-- Dedupe of observed roll resolutions, so the same logical roll (identified by the ruleset's
+-- rRoll.sUniqueValue, which is stable across crit re-rolls and per-target copies) is only
+-- processed once per kind/target - e.g. if the extension is accidentally enabled twice.
+local aProcessedRollKeys = {}
+local nProcessedRollKeyCount = 0
+
+local function getRollProcessingKey(sKind, rTarget, rRoll)
+	if not rRoll or not rRoll.sUniqueValue then return nil end
+	local sTargetPath = ""
+	if rTarget then
+		local nodeTargetCT = ActorManager.getCTNode(rTarget)
+		sTargetPath = (nodeTargetCT and nodeTargetCT.getPath()) or rTarget.sCTNode or ""
+	end
+	return sKind .. "|" .. tostring(rRoll.sUniqueValue) .. "|" .. sTargetPath
+end
+
+local function markRollProcessed(sKey)
+	-- Bound the table so it can't grow without limit over a long session.
+	if nProcessedRollKeyCount > 500 then
+		aProcessedRollKeys = {}
+		nProcessedRollKeyCount = 0
+	end
+	aProcessedRollKeys[sKey] = true
+	nProcessedRollKeyCount = nProcessedRollKeyCount + 1
+end
 
 -- Helper to safely check if a string is blank
 local function isBlankSafe(s)
@@ -274,9 +298,8 @@ end
 
 function onInit()
 	-- Guard against onInit() running more than once in the same session (e.g. a script/extension
-	-- reload during development). Without this, a second pass would capture our own onRollSkill/
-	-- onRollAttack wrappers (installed by the first pass) as the "original" ruleset handler, which
-	-- then call themselves forever on every roll and blow the Lua call stack.
+	-- reload during development), which would chain our observers onto themselves and produce
+	-- duplicate processing.
 	if bStealthTrackerInitialized then return end
 	bStealthTrackerInitialized = true
 
@@ -297,22 +320,6 @@ function onInit()
     -- resolves to the same underlying ruleset function as "skillroll"/"classroll" - this ruleset has
     -- no distinct attack handler.
     local aRollTypes = { "skillroll", "classroll", "classrollAttack", "attack", "critRoll", "critSkillRoll" }
-
-    -- Capture ruleset result handlers from ActionsManager (Host and Client)
-    local fSkillFallback = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll")
-    local fAttackFallback = getResultHandlerSafe("attack")
-
-    for _, sType in ipairs(aRollTypes) do
-        local fHandler = getResultHandlerSafe(sType)
-        if not fHandler then
-            if sType:lower():match("attack") then
-                fHandler = fAttackFallback
-            else
-                fHandler = fSkillFallback
-            end
-        end
-        aOriginalResultHandlers[sType] = fHandler
-    end
 
 	-- Host only registrations
 	if USER_ISHOST then
@@ -365,12 +372,58 @@ function onInit()
 		Comm.registerSlashHandler("stealth", processChatCommand)
 	end
 
-	-- Register our handlers globally via ActionsManager
-	for _, sType in ipairs(aRollTypes) do
-		if sType:lower():match("attack") then
-			ActionsManager.registerResultHandler(sType, onRollAttack)
-		else
-			ActionsManager.registerResultHandler(sType, onRollSkill)
+	-- Observe roll resolution AFTER the ruleset's own result handler has run, via CoreRPG's
+	-- GameManager "onActionPostResolve" layered hook (called by ActionsManager.resolveAction for
+	-- every roll type). We deliberately do NOT replace the registered result handlers: replacing
+	-- them puts this extension inside the resolution path, where any capture or ordering problem
+	-- (e.g. two copies of the extension enabled at once) either recurses (stack overflow) or
+	-- swallows the entire roll so nothing ever reaches chat.
+	if GameManager and GameManager.setMultiKeyFunction and GameManager.getMultiKeyFunction then
+		for _, sType in ipairs(aRollTypes) do
+			local fObserver
+			if sType:lower():match("attack") then
+				fObserver = onRollAttack
+			else
+				fObserver = onRollSkill
+			end
+			-- Chain any function already occupying this single-slot hook, and pcall our observer
+			-- so a StealthTracker bug can never disturb the ruleset's roll resolution.
+			local fPrevious = GameManager.getMultiKeyFunction("onActionPostResolve", sType)
+			GameManager.setMultiKeyFunction("onActionPostResolve", sType, function(rSource, rTarget, rRoll)
+				if fPrevious then
+					pcall(fPrevious, rSource, rTarget, rRoll)
+				end
+				pcall(fObserver, rSource, rTarget, rRoll)
+			end)
+		end
+	else
+		-- Fallback for CoreRPG versions without the GameManager layered hooks: wrap the ruleset's
+		-- registered result handlers. Refuse to treat one of our own wrappers as the "original"
+		-- handler so a bad capture can never recurse or silently swallow rolls.
+		local aOwnWrappers = {}
+		local fSkillFallback = getResultHandlerSafe("skillroll") or getResultHandlerSafe("classroll")
+		local fAttackFallback = getResultHandlerSafe("attack")
+		for _, sType in ipairs(aRollTypes) do
+			local bAttack = sType:lower():match("attack") ~= nil
+			local fObserver = bAttack and onRollAttack or onRollSkill
+			local fOriginal = getResultHandlerSafe(sType)
+			if not fOriginal then
+				fOriginal = bAttack and fAttackFallback or fSkillFallback
+			end
+			if fOriginal and aOwnWrappers[fOriginal] then
+				if Debug and Debug.console then
+					Debug.console("StealthTracker: refused self-capture of result handler for roll type: " .. sType)
+				end
+				fOriginal = nil
+			end
+			local fWrapper = function(rSource, rTarget, rRoll)
+				if fOriginal then
+					fOriginal(rSource, rTarget, rRoll)
+				end
+				pcall(fObserver, rSource, rTarget, rRoll)
+			end
+			aOwnWrappers[fWrapper] = true
+			ActionsManager.registerResultHandler(sType, fWrapper)
 		end
 	end
 
@@ -449,8 +502,15 @@ end
 
 function displayChatMessage(sFormattedText, bSecret)
 	if sFormattedText == nil then return end
-    local sMode = getMode()
-	local msg = {font = "msgfont", icon = "stealth_icon", secret = checkShowEye(), text = sFormattedText, mode = sMode}
+	-- Framed chat modes render via a FormattedText control that parses the text as XML - escape
+	-- any raw "<" so message text can never break it ("&lt;" renders as "<").
+	local sSafeText = sFormattedText:gsub("<", "&lt;")
+	local msg = {font = "msgfont", icon = "stealth_icon", secret = checkShowEye(), text = sSafeText}
+	-- Per the Comm refdoc, mode should be "set only if you want to specify a chat mode".
+	local sMode = getMode()
+	if sMode ~= "" then
+		msg.mode = sMode
+	end
 	if bSecret then
 		Comm.addChatMessage(msg)
 	else
@@ -547,10 +607,13 @@ function displayProcessActivePerception(rSource, rRoll)
 			local nStealthTarget = getStealthNumberFromEffects(nodeCT)
 			if nStealthTarget then
 				local sTargetName = ActorManager.getDisplayName(nodeCT)
+				-- NOTE: No angle brackets in chat text. Chat entries rendered with a frame style go
+				-- through a FormattedText control that parses the text as XML, and a raw "<" throws
+				-- "FormattedText SetValue XML Error: Name cannot begin with the ' ' character".
 				if nPerceptionRollTotal >= nStealthTarget then
-					table.insert(aOutput, string.format("%s SPOTTED %s! (Perception roll %d >= Stealth %d)", sSourceDisplayName:upper(), sTargetName, nPerceptionRollTotal, nStealthTarget))
+					table.insert(aOutput, string.format("%s SPOTTED %s! (Perception roll %d vs Stealth %d)", sSourceDisplayName:upper(), sTargetName, nPerceptionRollTotal, nStealthTarget))
 				else
-					table.insert(aOutput, string.format("%s did not spot %s. (Perception roll %d < Stealth %d)", sSourceDisplayName, sTargetName, nPerceptionRollTotal, nStealthTarget))
+					table.insert(aOutput, string.format("%s did not spot %s. (Perception roll %d vs Stealth %d)", sSourceDisplayName, sTargetName, nPerceptionRollTotal, nStealthTarget))
 				end
 			end
 		end
@@ -1136,56 +1199,49 @@ function onInitiateSkill(rSource, rTarget, rRoll)
     end
 end
 
+-- Post-resolve observer for attack-type rolls. Runs AFTER the ruleset's own result handler has
+-- fully resolved the roll and produced its chat output - it never calls or replaces that handler.
 function onRollAttack(rSource, rTarget, rRoll)
-	-- Re-entrancy guard: if this exact roll is somehow dispatched back through our own handler
-	-- while we're still processing it, skip instead of recursing.
-	local sKey = rRoll and rRoll.sUniqueValue and tostring(rRoll.sUniqueValue)
-	if sKey and aProcessingRolls[sKey] then return end
-	if sKey then aProcessingRolls[sKey] = true end
-
-	local sType = rRoll and rRoll.sType
-	local fOriginal = sType and aOriginalResultHandlers[sType]
-	if type(fOriginal) == "function" then
-		fOriginal(rSource, rTarget, rRoll)
+	local sKey = getRollProcessingKey("attack", rTarget, rRoll)
+	if sKey then
+		if aProcessedRollKeys[sKey] then return end
+		markRollProcessed(sKey)
 	end
 
-	if not rTarget and rRoll.bSecret then
+	if not rTarget and rRoll and rRoll.bSecret then
 		displayTowerRoll()
 	end
 
 	displayProcessAttackFromStealth(rSource, rTarget)
-
-	if sKey then aProcessingRolls[sKey] = nil end
 end
 
+-- Post-resolve observer for skill-type rolls (including the crit continuation rolls). Runs AFTER
+-- the ruleset's own result handler - it never calls or replaces that handler.
 function onRollSkill(rSource, rTarget, rRoll)
-	-- Re-entrancy guard: if this exact roll is somehow dispatched back through our own handler
-	-- while we're still processing it, skip instead of recursing.
-	local sKey = rRoll and rRoll.sUniqueValue and tostring(rRoll.sUniqueValue)
-	if sKey and aProcessingRolls[sKey] then return end
-	if sKey then aProcessingRolls[sKey] = true end
-
-	local sType = rRoll and rRoll.sType
-	local fOriginal = sType and aOriginalResultHandlers[sType]
-	if type(fOriginal) == "function" then
-		fOriginal(rSource, rTarget, rRoll)
-	end
-
 	local rProcessedRoll = getCombinedRoll(rRoll)
+	if not rSource or not rProcessedRoll or not ActionsManager.doesRollHaveDice(rProcessedRoll) then return end
 
-	if rSource and rProcessedRoll and ActionsManager.doesRollHaveDice(rProcessedRoll) then
-		if isExplodingOrFumblingRoll(rRoll) then
-			if sKey then aProcessingRolls[sKey] = nil end
-			return
-		end
-		if isStealthSkillRoll(rProcessedRoll.sDesc) then
-			displayProcessStealthUpdateForSkillHandlers(rSource, rProcessedRoll)
-		elseif isPerceptionSkillRoll(rProcessedRoll.sDesc) then
-			displayProcessActivePerception(rSource, rProcessedRoll)
-		end
+	-- An initial exploding (10) or fumbling (1) roll is not final - the crit continuation roll
+	-- (critRoll/critSkillRoll) carries the combined result and is processed instead.
+	if isExplodingOrFumblingRoll(rRoll) then return end
+
+	local bStealth = isStealthSkillRoll(rProcessedRoll.sDesc)
+	local bPerception = not bStealth and isPerceptionSkillRoll(rProcessedRoll.sDesc)
+	if not bStealth and not bPerception then return end
+
+	-- Key off the combined roll: crit continuation rolls don't carry sUniqueValue themselves, but
+	-- their sPrevRoll JSON preserves the original roll's value.
+	local sKey = getRollProcessingKey("skill", rTarget, rProcessedRoll)
+	if sKey then
+		if aProcessedRollKeys[sKey] then return end
+		markRollProcessed(sKey)
 	end
 
-	if sKey then aProcessingRolls[sKey] = nil end
+	if bStealth then
+		displayProcessStealthUpdateForSkillHandlers(rSource, rProcessedRoll)
+	else
+		displayProcessActivePerception(rSource, rProcessedRoll)
+	end
 end
 
 function processChatCommand(_, sParams)
