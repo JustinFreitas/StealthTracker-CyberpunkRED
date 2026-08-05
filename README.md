@@ -59,6 +59,10 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 
 ## Changelog
 
+### v1.6.1
+* Added missing GM awareness summary output when players roll stealth directly from a client.
+* Added support for `bTower` flag checking on Dice Tower attack rolls.
+
 ### v1.6
 * Fixed issue where Stealth effects remained visible to players on Combat Tracker when 'Player: Show Stealth info' option was set to None.
 * Explicitly set isgmonly flag on created effect database nodes for GM-only stealth effects and suppressed chat announcements when player stealth info is disabled.

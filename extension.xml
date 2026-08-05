@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
 
 <root version="3.3" release="8.1|CoreRPG:4.1">
-	<announcement text="Cyberpunk RED StealthTracker v1.6, 8/5/26\rJustin Freitas 2026" font="emotefont" icon="stealth_icon" />
+	<announcement text="Cyberpunk RED StealthTracker v1.6.1, 8/5/26\rJustin Freitas 2026" font="emotefont" icon="stealth_icon" />
 	<properties>
 		<name>Feature: StealthTracker for Cyberpunk RED</name>
-		<version>1.6</version>
+		<version>1.6.1</version>
 		<loadorder>9999</loadorder>
 		<author>Justin Freitas</author>
 		<description>Stealth tracking via effects in the Combat Tracker with related information regarding the hiding actor and who can and cannot see them, adapted for Cyberpunk RED ruleset.</description>

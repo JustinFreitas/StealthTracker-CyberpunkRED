@@ -1040,6 +1040,10 @@ function handleUpdateStealth(msgOOB)
 
 	if checkAndDisplayAllowOutOfCombatAndTurnChecks(msgOOB.sCTNodeId) then
 		setNodeWithStealthValue(msgOOB.sCTNodeId, nStealthTotal)
+        if OptionsManager.getOption(STEALTHTRACKER_SHOW_AFTER_STEALTH) == ON then
+            local nodeSourceCT = ActorManager.getCTNode(msgOOB.sCTNodeId)
+            displayStealthCheckInformationWithConditionAndVerboseChecks(nodeSourceCT, FORCE_DISPLAY)
+        end
 	end
 end
 
@@ -1296,7 +1300,7 @@ function processAttackRoll(rSource, rTarget, rRoll)
 		markRollProcessed(sKey)
 	end
 
-	if not rTarget and rRoll and rRoll.bSecret then
+	if not rTarget and rRoll and (rRoll.bSecret or rRoll.bTower) then
 		displayTowerRoll()
 	end
 
