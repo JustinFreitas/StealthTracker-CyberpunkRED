@@ -5,6 +5,7 @@
 scripts/.luacheckrc
 readme.txt
 build/out/
+*.ext
 node_modules/
 .vscode/launch.json
 scripts/luacheck.exe

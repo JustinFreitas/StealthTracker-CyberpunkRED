@@ -59,6 +59,10 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 
 ## Changelog
 
+### v1.6
+* Fixed issue where Stealth effects remained visible to players on Combat Tracker when 'Player: Show Stealth info' option was set to None.
+* Explicitly set isgmonly flag on created effect database nodes for GM-only stealth effects and suppressed chat announcements when player stealth info is disabled.
+
 ### v1.0.5
 * Fixed a `FormattedText SetValue XML Error` that fired on every Perception roll (a raw `<` character in the "did not spot" message broke FGU's chat XML rendering). Chat text is now also escaped defensively against this class of error.
 * Fixed attack rolls silently producing no chat output at all. The extension previously replaced the ruleset's own roll handlers and called a captured "original" handler; if that capture ever pointed back at itself (e.g. the extension enabled twice), rolls either crashed with a stack overflow or were swallowed entirely. StealthTracker now only *observes* rolls after the ruleset has fully resolved and displayed them, so it can no longer interfere with roll output.

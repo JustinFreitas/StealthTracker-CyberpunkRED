@@ -593,9 +593,6 @@ function displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
                     displayStealthCheckInformationWithConditionAndVerboseChecks(nodeSourceCT, FORCE_DISPLAY)
                 end
 			end
-		elseif isPlayerStealthInfoDisabled() and not checkVerbosityOff() then
-			local output = string.format("The DM has StealthTracker info set to hidden. Use the dice tower to make your %s roll.", LOCALIZED_STEALTH)
-			displayChatMessage(output, false)
 		else
 			notifyUpdateStealth(sCTNodePath, nStealthTotal)
 		end
@@ -820,6 +817,8 @@ end
 
 function getFormattedPerformAttackFromStealth(rSource, rTarget, nStealthSource, aOutput)
 	if not rSource or not rTarget or nStealthSource == nil then return end
+    
+    rTarget = resolveTargetDuplicateCTNode(rSource, rTarget)
 
 	aOutput = validateTableOrNew(aOutput)
 	local sMsgText
@@ -1007,7 +1006,16 @@ function getStealthValueFromEffectNode(nodeEffect)
 	local aEffectComponents = EffectManager.parseEffect and EffectManager.parseEffect(sEffectLabel) or { sEffectLabel }
 	local pattern = "^%s*" .. LOCALIZED_STEALTH_LOWER .. ":%s*(%-?%d+)%s*$"
 	for _, component in ipairs(aEffectComponents) do
-		local sMatch = string.match(component, pattern)
+		-- First, strip leading/trailing whitespace
+		local sCleanComponent = component:match("^%s*(.-)%s*$") or component
+		-- Then strip outer parentheses if present (e.g. from GM-only display label or manual entry)
+		sCleanComponent = sCleanComponent:match("^%((.-)%)$") or sCleanComponent
+		-- Also strip an unmatched leading parenthesis if FGU split a GM-only effect with semicolons
+		sCleanComponent = sCleanComponent:match("^%((.*)$") or sCleanComponent
+		-- Also strip an unmatched trailing parenthesis
+		sCleanComponent = sCleanComponent:match("^(.-)%)$") or sCleanComponent
+
+		local sMatch = string.match(sCleanComponent, pattern)
 		if sMatch then
 			sExtractedStealth = sMatch
 		end
@@ -1115,6 +1123,8 @@ end
 function isTargetHiddenFromSource(rSource, rTarget)
 	if not rSource or not rTarget then return end
 
+	rTarget = resolveTargetDuplicateCTNode(rSource, rTarget)
+
 	local rTargetCTNode = ActorManager.getCTNode(rTarget)
 	if not rTargetCTNode then return end
 
@@ -1151,6 +1161,58 @@ function isValidCTNode(nodeCT)
 		return true
 	end
 	return isFriend(nodeCT)
+end
+
+function resolveTargetDuplicateCTNode(rSource, rTarget)
+	if not rTarget or not rSource then return rTarget end
+	
+	local nodeTargetCT = ActorManager.getCTNode(rTarget)
+	if not nodeTargetCT then return rTarget end
+	
+	local sTargetName = ActorManager.getDisplayName(rTarget)
+	if sTargetName == "" then return rTarget end
+	
+	-- 1. Check if the attacker has a target selected with the same name
+	if TargetingManager and TargetingManager.getFullTargets then
+		local aTargets = TargetingManager.getFullTargets(rSource)
+		for _, rT in ipairs(aTargets or {}) do
+			local nodeTCT = ActorManager.getCTNode(rT)
+			if nodeTCT then
+				local sTName = ActorManager.getDisplayName(rT)
+				if StringManager.trim(sTName) == StringManager.trim(sTargetName) then
+					if Debug and Debug.console then
+						Debug.console("StealthTracker-CyberpunkRED: Redirecting target to attacker's explicit target by name:", nodeTCT.getPath())
+					end
+					return rT
+				end
+			end
+		end
+	end
+	
+	-- 2. Fallback for drops: Find if any CT entry with the same name is actively hidden
+	local nodeHighestPriorityCT = nil
+	local lCombatTrackerActors = CombatManager.getSortedCombatantList and CombatManager.getSortedCombatantList() or {}
+	for _, nodeCT in ipairs(lCombatTrackerActors) do
+		local sCTName = ActorManager.getDisplayName(nodeCT)
+		if sCTName == sTargetName then
+			local bIsHidden = getStealthNumberFromEffects(nodeCT) ~= nil
+			if bIsHidden then
+				nodeHighestPriorityCT = nodeCT
+			end
+		end
+	end
+	
+	if nodeHighestPriorityCT and nodeHighestPriorityCT.getPath() ~= nodeTargetCT.getPath() then
+		local rNewTarget = ActorManager.resolveActor(nodeHighestPriorityCT)
+		if rNewTarget then
+			if Debug and Debug.console then
+				Debug.console("StealthTracker-CyberpunkRED: Redirecting target to hiding duplicate by name:", nodeHighestPriorityCT.getPath())
+			end
+			return rNewTarget
+		end
+	end
+	
+	return rTarget
 end
 
 function modifyPassivePerceptionForActorEffects(nodeCreature, nPP)
@@ -1359,7 +1421,21 @@ function setNodeWithStealthValue(sCTNode, nStealthTotal)
 		nGMOnly = nEffectGMOnly
 	}
 
-	EffectManager.addEffect("", "", nodeCT, rEffect, true)
+	-- Only show the chat announcement message if visibility is set to 'all' (Chat and Effects) and it is not a GM-only effect.
+	local sVisibility = OptionsManager.getOption(STEALTHTRACKER_VISIBILITY)
+	local bShowMsg = (sVisibility == ALL) and (nEffectGMOnly == 0)
+
+	EffectManager.addEffect("", "", nodeCT, rEffect, bShowMsg)
+
+	-- Explicitly set isgmonly on the newly created effect node if it is GM-only to ensure it is hidden from player CT
+	if nEffectGMOnly == 1 then
+		for _, nodeEffect in pairs(DB.getChildren(nodeCT, EFFECTS)) do
+			if DB.getValue(nodeEffect, "label", "") == sEffectName then
+				DB.setValue(nodeEffect, "isgmonly", "number", 1)
+				break
+			end
+		end
+	end
 end
 
 function validateTableOrNew(aTable)
