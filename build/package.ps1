@@ -4,7 +4,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
 $outDir = "$repoRoot\build\out"
 $zipPath = "$outDir\CyberpunkRED-StealthTracker.zip"
-$extPath = "C:\Users\justi\AppData\Roaming\SmiteWorks\Fantasy Grounds\extensions\CyberpunkRED-StealthTracker.ext"
+$extTargets = @(
+    "$env:APPDATA\SmiteWorks\Fantasy Grounds\extensions\CyberpunkRED-StealthTracker.ext",
+    "\\vader\C\Users\justi\AppData\Roaming\SmiteWorks\Fantasy Grounds\extensions\CyberpunkRED-StealthTracker.ext"
+)
 
 if (-not (Test-Path $outDir)) {
     New-Item -ItemType Directory -Path $outDir | Out-Null
@@ -35,13 +38,23 @@ foreach ($relPath in $filesToInclude) {
 
 $zip.Dispose()
 
-Copy-Item $zipPath -Destination $extPath -Force
-Write-Host "Successfully packaged and copied to: ${extPath}"
-
-# Verify zip entry paths
-$readZip = [System.IO.Compression.ZipFile]::OpenRead($extPath)
-Write-Host "`nContents of deployed ${extPath}:"
-foreach ($entry in $readZip.Entries) {
-    Write-Host "  $($entry.FullName) ($($entry.Length) bytes)"
+foreach ($target in $extTargets) {
+    $parentDir = Split-Path -Parent $target
+    if (Test-Path $parentDir) {
+        Copy-Item $zipPath -Destination $target -Force
+        Write-Host "Successfully packaged and copied to: $target"
+    } else {
+        Write-Host "Target directory not accessible: $parentDir"
+    }
 }
-$readZip.Dispose()
+
+# Verify zip entry paths from primary target
+$primaryTarget = $extTargets[0]
+if (Test-Path $primaryTarget) {
+    $readZip = [System.IO.Compression.ZipFile]::OpenRead($primaryTarget)
+    Write-Host "`nContents of deployed ${primaryTarget}:"
+    foreach ($entry in $readZip.Entries) {
+        Write-Host "  $($entry.FullName) ($($entry.Length) bytes)"
+    }
+    $readZip.Dispose()
+}

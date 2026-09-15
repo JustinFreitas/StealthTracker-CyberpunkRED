@@ -52,12 +52,29 @@ local bStealthTrackerInitialized = false
 local aProcessedRollKeys = {}
 local nProcessedRollKeyCount = 0
 
+-- Helper to safely extract database node path from a databasenode (userdata/databasenode in FGU), mock table, or string.
+local function getNodePathSafe(vNode)
+	if not vNode then return nil end
+	if type(vNode) == "string" then
+		return (vNode ~= "" and vNode) or nil
+	end
+	if (type(vNode) == "userdata" or type(vNode) == "table" or type(vNode) == "databasenode") and vNode.getPath then
+		local bOk, sPath = pcall(vNode.getPath, vNode)
+		if bOk and sPath and sPath ~= "" then return sPath end
+	end
+	if DB and DB.getPath then
+		local bOk, sPath = pcall(DB.getPath, vNode)
+		if bOk and sPath and sPath ~= "" then return sPath end
+	end
+	return nil
+end
+
 local function getRollProcessingKey(sKind, rTarget, rRoll)
 	if not rRoll or not rRoll.sUniqueValue then return nil end
 	local sTargetPath = ""
 	if rTarget then
 		local nodeTargetCT = ActorManager.getCTNode(rTarget)
-		sTargetPath = (nodeTargetCT and nodeTargetCT.getPath()) or rTarget.sCTNode or ""
+		sTargetPath = getNodePathSafe(nodeTargetCT) or rTarget.sCTNode or ""
 	end
 	return sKind .. "|" .. tostring(rRoll.sUniqueValue) .. "|" .. sTargetPath
 end
@@ -318,7 +335,7 @@ function onInit()
 	LOCALIZED_STEALTH = "Stealth"
 	LOCALIZED_STEALTH_ABV = "S"
 	LOCALIZED_STEALTH_LOWER = LOCALIZED_STEALTH:lower()
-	USER_ISHOST = User.isHost()
+	USER_ISHOST = (Session and Session.IsHost) or (User and User.isHost and User.isHost()) or false
 
     -- Initiation hook (for forcing secret rolls)
     if ActionSkill then
@@ -365,16 +382,27 @@ function onInit()
             { labels = option_val_on, values = ON, baselabel = "option_val_off", baseval = OFF, default = OFF })
 
         CombatManager.setCustomCombatReset(onCombatResetEvent)
-		if CombatDropManager then
-			CombatManager_onDrop = CombatDropManager.onLegacyDropEvent
-			CombatDropManager.onLegacyDropEvent = onDrop
+		if CombatDropManager and CombatDropManager.registerLegacyDropCallback then
+			CombatDropManager.registerLegacyDropCallback(onDrop)
+		elseif CombatDropManager and CombatDropManager.onLegacyDropEvent then
+			local fOriginalLegacyDrop = CombatDropManager.onLegacyDropEvent
+			CombatDropManager.onLegacyDropEvent = function(rSource, rTarget, draginfo)
+				onDrop(rSource, rTarget, draginfo)
+				if fOriginalLegacyDrop then
+					fOriginalLegacyDrop(rSource, rTarget, draginfo)
+				end
+			end
 		else
-			CombatManager_onDrop = CombatManager.onDrop
-			CombatManager.onDrop = onDrop
+			if CombatManager.onDrop ~= onDrop then
+				CombatManager_onDrop = CombatManager.onDrop
+				CombatManager.onDrop = onDrop
+			end
 		end
 
-        CombatManager_requestActivation = CombatManager.requestActivation
-        CombatManager.requestActivation = requestActivation
+        if CombatManager.requestActivation ~= requestActivation then
+            CombatManager_requestActivation = CombatManager.requestActivation
+            CombatManager.requestActivation = requestActivation
+        end
 
 		OOBManager.registerOOBMsgHandler(OOB_MSGTYPE_UPDATESTEALTH, handleUpdateStealth)
 		OOBManager.registerOOBMsgHandler(OOB_MSGTYPE_ATTACKFROMSTEALTH, handleAttackFromStealth)
@@ -458,7 +486,12 @@ function checkAndDisplayAllowOutOfCombatAndTurnChecks(vActor)
 	if checkAndDisplayCTInactiveAndOutsideOfCombatStealthDisallowed() then return false end
 
 	local nodeCT = ActorManager.getCTNode(vActor)
-	if CombatManager.getActiveCT() ~= nodeCT and not checkAllowOutOfTurn() then
+	local nodeActiveCT = CombatManager.getActiveCT()
+	local sNodeCTPath = getNodePathSafe(nodeCT) or getNodePathSafe(vActor)
+	local sActiveCTPath = getNodePathSafe(nodeActiveCT)
+	local bAllowOutOfTurn = checkAllowOutOfTurn()
+
+	if (not sActiveCTPath or sActiveCTPath ~= sNodeCTPath) and not bAllowOutOfTurn then
 		if checkVerbosityMax() then
 			displayChatMessage(string.format(ST_STEALTH_DISABLED_OUT_OF_FORMAT, TURN), SECRET)
 		end
@@ -505,7 +538,11 @@ function deleteAllStealthEffects(nodeCT)
 	if not nodeCT then return end
 	for _, nodeEffect in pairs(DB.getChildren(nodeCT, EFFECTS)) do
 		if getStealthValueFromEffectNode(nodeEffect) then
-			nodeEffect.delete()
+			if DB and DB.deleteNode then
+				DB.deleteNode(nodeEffect)
+			elseif nodeEffect.delete then
+				nodeEffect.delete()
+			end
 		end
 	end
 end
@@ -538,10 +575,11 @@ function displayProcessAttackFromStealth(rSource, rTarget)
 	local nodeSourceCT = ActorManager.getCTNode(rSource)
 	if not nodeSourceCT then return end
 
-	local sCTNodePath = nodeSourceCT.getPath()
+	local sCTNodePath = getNodePathSafe(nodeSourceCT) or ""
 	if not USER_ISHOST then
 		local nodeTargetCT = rTarget and ActorManager.getCTNode(rTarget)
-		notifyAttackFromStealth(sCTNodePath, (nodeTargetCT and nodeTargetCT.getPath()) or "")
+		local sTargetCTNode = getNodePathSafe(nodeTargetCT) or (rTarget and rTarget.sCTNode) or ""
+		notifyAttackFromStealth(sCTNodePath, sTargetCTNode)
 		return
 	end
 
@@ -584,7 +622,7 @@ end
 function displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
 	local nodeSourceCT = ActorManager.getCTNode(rSource)
 	if nodeSourceCT and ActionsManager.doesRollHaveDice(rRoll) then
-		local sCTNodePath = nodeSourceCT.getPath()
+		local sCTNodePath = getNodePathSafe(nodeSourceCT) or ""
 		local nStealthTotal = ActionsManager.total(rRoll)
 		if USER_ISHOST then
 			if checkAndDisplayAllowOutOfCombatAndTurnChecks(sCTNodePath) then
@@ -752,7 +790,13 @@ function expireStealthEffectOnCTNode(rActor, aOutput)
 				insertFormattedTextWithSeparatorIfNonEmpty(aOutput, sText)
 			end
 		else
-			EffectManager.expireEffect(nodeCT, nodeLastEffectWithStealth, 0)
+			if EffectManager and EffectManager.expireEffect then
+				EffectManager.expireEffect(nodeCT, nodeLastEffectWithStealth, 0)
+			elseif DB and DB.deleteNode then
+				DB.deleteNode(nodeLastEffectWithStealth)
+			elseif nodeLastEffectWithStealth.delete then
+				nodeLastEffectWithStealth.delete()
+			end
 		end
 	end
 end
@@ -822,25 +866,22 @@ function getFormattedPerformAttackFromStealth(rSource, rTarget, nStealthSource, 
 
 	aOutput = validateTableOrNew(aOutput)
 	local sMsgText
-    local rTargetHidden = isTargetHiddenFromSource(rSource, rTarget)
-	if rTargetHidden and not rTargetHidden.hidden then
-		local sStats = string.format("(%s %s: %d, %s Perception: %d)",
-									 ActorManager.getDisplayName(rSource),
-									 LOCALIZED_STEALTH_ABV,
-									 nStealthSource,
-									 ActorManager.getDisplayName(rTarget),
-									 getPassivePerceptionNumber(rTarget))
-		if not doesTargetPerceiveAttackerFromStealth(nStealthSource, rTarget) then
-			sMsgText = string.format("Attacker is hidden (Ambush). Target cannot dodge? %s", sStats)
-		elseif checkVerbosityMax() then
-			sMsgText = string.format("Attacker not hidden. %s", sStats)
-		else
-			sMsgText = nil
-		end
+	local sStats = string.format("(%s %s: %d, %s Perception: %d)",
+								 ActorManager.getDisplayName(rSource),
+								 LOCALIZED_STEALTH_ABV,
+								 nStealthSource,
+								 ActorManager.getDisplayName(rTarget),
+								 getPassivePerceptionNumber(rTarget))
+	if not doesTargetPerceiveAttackerFromStealth(nStealthSource, rTarget) then
+		sMsgText = string.format("Attacker is hidden (Ambush). Target cannot dodge? %s", sStats)
+	elseif checkVerbosityMax() then
+		sMsgText = string.format("Attacker not hidden. %s", sStats)
+	else
+		sMsgText = nil
+	end
 
-		if sMsgText then
-			insertFormattedTextWithSeparatorIfNonEmpty(aOutput, sMsgText)
-		end
+	if sMsgText then
+		insertFormattedTextWithSeparatorIfNonEmpty(aOutput, sMsgText)
 	end
 end
 
@@ -1274,7 +1315,7 @@ function onDropEvent(rSource, rTarget, draginfo)
 end
 
 function onGenericActionPostRoll(rSource, rRoll)
-	if rRoll and ActionsManager.doesRollHaveDice(rRoll) and rRoll.sType == GENACTROLL and rRoll.sGenericAction == "Hide" then
+	if rRoll and ActionsManager.doesRollHaveDice(rRoll) and rRoll.sType == GENACTROLL and (rRoll.sGenericAction == "Hide" or (rRoll.sGenericAction and rRoll.sGenericAction:lower() == "hide")) then
 		displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
 	end
 end
@@ -1392,13 +1433,18 @@ function processHostOnlySubcommands(sSubcommand)
 end
 
 function requestActivation(nodeEntry, bSkipBell)
-    if type(CombatManager_requestActivation) == "function" then
+    if type(CombatManager_requestActivation) == "function" and CombatManager_requestActivation ~= requestActivation then
         CombatManager_requestActivation(nodeEntry, bSkipBell)
     end
     if not isValidCTNode(nodeEntry) then return end
 
-    ensureStealthSkillExistsOnNpc(nodeEntry)
-	displayStealthCheckInformationWithConditionAndVerboseChecks(nodeEntry, false)
+    local bOk, sErr = pcall(function()
+        ensureStealthSkillExistsOnNpc(nodeEntry)
+        displayStealthCheckInformationWithConditionAndVerboseChecks(nodeEntry, false)
+    end)
+    if not bOk and Debug and Debug.console then
+        Debug.console("StealthTracker: error in requestActivation: " .. tostring(sErr))
+    end
 end
 
 function setNodeWithStealthValue(sCTNode, nStealthTotal)

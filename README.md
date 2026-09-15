@@ -59,6 +59,13 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 
 ## Changelog
 
+### v1.6.2
+* **Attack from Stealth Uncoupling**: Fixed attacker ambush notification being suppressed when the target was also hidden in stealth.
+* **Safe Node Comparison**: Implemented path-based database node comparison (`getNodePathSafe()`) to avoid false out-of-turn warnings caused by distinct FGU userdata pointer references.
+* **Turn Activation Guard & Error Isolation**: Guarded `CombatManager.requestActivation` against `/reload` recursion and wrapped NPC skill/stealth checks in `pcall` to prevent third-party NPC data anomalies from breaking turn advancement.
+* **Modern CoreRPG Standards**: Updated host identification to check `Session.IsHost`, supported `CombatDropManager.registerLegacyDropCallback`, and switched to `DB.deleteNode()` for effect removals.
+* **Generic Actions Hide Case-Insensitivity**: Normalized `sGenericAction` check for Hide rolls.
+
 ### v1.6.1
 * Added missing GM awareness summary output when players roll stealth directly from a client.
 * Added support for `bTower` flag checking on Dice Tower attack rolls.

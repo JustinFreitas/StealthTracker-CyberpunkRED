@@ -694,6 +694,108 @@ async function runTests() {
         return bTestNoneMsg and bTestNoneGMOnly and bTestNoneDBGMOnly and bTestEffectsMsg and bTestEffectsGMOnly and bTestAllMsg and bTestAllGMOnly
     `);
 
+    // --- GROUP R: v1.6.2 Parity & Hardening Suite (batched into single doString) ---
+    await runAssert(
+        "v1.6.2 parity and hardening suite (ambush uncoupling, path comparison, activation resilience)",
+        "",
+        `
+        local failures = {}
+        local function fail(msg) table.insert(failures, msg) end
+
+        -- 1. Ambush uncoupling: Attacker in stealth should emit ambush prompt even if target is hidden
+        do
+            local rAttacker = { sCTNode = "combattracker.list.id-00001", sName = "Solo" }
+            local rTarget = { sCTNode = "combattracker.list.id-00002", sName = "Boostergang" }
+            
+            local oldGetDisplayName = ActorManager.getDisplayName
+            ActorManager.getDisplayName = function(v) return v and v.sName or "Actor" end
+            
+            local oldGetPP = getPassivePerceptionNumber
+            getPassivePerceptionNumber = function(v) return 12 end
+            
+            local oldIsTargetHidden = isTargetHiddenFromSource
+            isTargetHiddenFromSource = function(src, tgt)
+                return { hidden = true, stealth = 15, sourcePP = 10 }
+            end
+            
+            local aOutput = {}
+            getFormattedPerformAttackFromStealth(rAttacker, rTarget, 18, aOutput)
+            
+            ActorManager.getDisplayName = oldGetDisplayName
+            getPassivePerceptionNumber = oldGetPP
+            isTargetHiddenFromSource = oldIsTargetHidden
+            
+            local bFoundAmbush = false
+            for _, msg in ipairs(aOutput) do
+                if msg:match("Attacker is hidden %(Ambush%)") then
+                    bFoundAmbush = true
+                end
+            end
+            if not bFoundAmbush then
+                fail("Ambush message suppressed when target in stealth")
+            end
+        end
+
+        -- 2. Database node path comparison in checkAndDisplayAllowOutOfCombatAndTurnChecks
+        do
+            local oldGetActive = CombatManager.getActiveCT
+            local oldGetCTNode = ActorManager.getCTNode
+            local oldAllowTurn = checkAllowOutOfTurn
+            local oldDisallowed = checkAndDisplayCTInactiveAndOutsideOfCombatStealthDisallowed
+            
+            checkAndDisplayCTInactiveAndOutsideOfCombatStealthDisallowed = function() return false end
+            checkAllowOutOfTurn = function() return false end
+            
+            local nodeActive = { getPath = function() return "combattracker.list.id-00001" end }
+            local nodeActor = { getPath = function() return "combattracker.list.id-00001" end }
+            
+            CombatManager.getActiveCT = function() return nodeActive end
+            ActorManager.getCTNode = function(v) return nodeActor end
+            
+            local bResultSamePath = checkAndDisplayAllowOutOfCombatAndTurnChecks("combattracker.list.id-00001")
+            
+            local nodeDifferent = { getPath = function() return "combattracker.list.id-00002" end }
+            ActorManager.getCTNode = function(v) return nodeDifferent end
+            local bResultDiffPath = checkAndDisplayAllowOutOfCombatAndTurnChecks("combattracker.list.id-00002")
+            
+            CombatManager.getActiveCT = oldGetActive
+            ActorManager.getCTNode = oldGetCTNode
+            checkAllowOutOfTurn = oldAllowTurn
+            checkAndDisplayCTInactiveAndOutsideOfCombatStealthDisallowed = oldDisallowed
+            
+            if bResultSamePath ~= true then
+                fail("Different node references with same path rejected in turn check")
+            end
+            if bResultDiffPath ~= false then
+                fail("Different paths accepted when out-of-turn disallowed")
+            end
+        end
+
+        -- 3. requestActivation recursion & pcall error tolerance
+        do
+            local oldEnsure = ensureStealthSkillExistsOnNpc
+            local oldDisplay = displayStealthCheckInformationWithConditionAndVerboseChecks
+            local oldValid = isValidCTNode
+            
+            isValidCTNode = function(n) return true end
+            ensureStealthSkillExistsOnNpc = function(n) error("Simulated NPC skill error") end
+            displayStealthCheckInformationWithConditionAndVerboseChecks = function(n, b) end
+            
+            local ok, err = pcall(requestActivation, {}, false)
+            
+            ensureStealthSkillExistsOnNpc = oldEnsure
+            displayStealthCheckInformationWithConditionAndVerboseChecks = oldDisplay
+            isValidCTNode = oldValid
+            
+            if not ok then
+                fail("requestActivation did not catch inner error via pcall")
+            end
+        end
+
+        return table.concat(failures, "; ")
+        `
+    );
+
     // --- GROUP Q: Static source checks ---
     // No chat-bound string may contain a raw "<" (breaks FormattedText rendering, see GROUP P).
     function runStaticAssert(name, condition) {
