@@ -13,7 +13,7 @@ This extension monitors PC and NPC Stealth rolls, records their stealth score as
 2. **Active Perception vs. Tracked Stealth**:
    * When a player or NPC rolls an active **Perception** check, the extension automatically compares the roll against all hiding enemies in the Combat Tracker and reports exactly who is spotted (e.g. `GUARD A SPOTTED Player B! (Perception roll 14 vs Stealth 12)`).
 3. **Turn-Start Awareness Summaries**:
-   * On an actor's turn start in the Combat Tracker, the extension evaluates their **Base Awareness** (`10 + INT + Perception Skill Level`) against all hiding opponents, notifying the GM in chat who they perceive or miss.
+   * On an actor's turn start in the Combat Tracker, the extension evaluates their **Base Awareness** (`5 + INT + Perception Skill Level`) against all hiding opponents, notifying the GM in chat who they perceive or miss.
 4. **Stealth Expiration**:
    * Attacking or performing loud/obvious actions will automatically expire the actor's active `Stealth` effect (configurable via options).
 5. **NPC Skill Generation**:
@@ -58,6 +58,13 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 ---
 
 ## Changelog
+
+### v1.7
+* **Dice Tower & Secret Roll Privacy**: Stealth rolls made in the Dice Tower or secretly (`rRoll.bSecret` / `rRoll.bTower`, including critical continuation rolls and secret chat rolls dragged onto the CT) now automatically mark the resulting `Stealth: X` Combat Tracker effect as `GM Only` (`isgmonly = 1`) and suppress public chat announcements, even when `Player: Show Stealth info` is set to `Effects` or `Chat and Effects`.
+* **Client-Side Visibility Option Lookup & Roll Initiation Hook**: Fixed `isPlayerStealthInfoDisabled()` on player clients by falling back to `DB.getValue("options.STEALTHTRACKER_VISIBILITY", "")`, and hooked `ActionsManager.performAction` alongside `ActionSkill.onRoll` so Stealth rolls are marked secret before dice are thrown when visibility is `None` or the actor is hidden.
+* **Combat Tracker Chat-Roll Drag-and-Drop Fix**: Hooked `CombatDropManager.handleAnyDrop` directly in `onInit()` to ensure chat roll total drags reliably update CT stealth effects across modern CoreRPG, and detect Dice Tower / secret origins from description tags (`[TOWER]`, `[GM]`).
+* **Active Perception Fixes**: Fixed `displayProcessActivePerception` to compare CT node paths via `getNodePathSafe()` (preventing hiding actors from spotting themselves due to distinct FGU userdata references), respect the `CT: Faction filter` option, and use `getActorDisplayNameSafe()` to protect unidentified NPC names.
+* **Duplicate CT Actor & Stealth Effect Modifier Parity**: Added `getActiveDuplicateCTNodePath()` redirection for duplicate CT entries, updated `resolveTargetDuplicateCTNode()` to prefer the highest-Stealth duplicate, and wired `STEALTH_EFFECT_MODIFIERS` architecture (with chat breakdown formatting for modified Perception, e.g. `10 [15 - 5]`), ready for future custom gear/effect expansions.
 
 ### v1.6.2
 * **Attack from Stealth Uncoupling**: Fixed attacker ambush notification being suppressed when the target was also hidden in stealth.

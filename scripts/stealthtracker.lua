@@ -43,7 +43,7 @@ VISIBLE = "visible"
 -- Configuration table for stealth effects to apply to observers
 STEALTH_EFFECT_MODIFIERS = {}
 
-local ActionSkill_onRoll_Original, CombatManager_onDrop, CombatManager_requestActivation
+local ActionSkill_onRoll_Original, ActionsManager_performAction_Original, CombatManager_onDrop, CombatManager_requestActivation
 local bStealthTrackerInitialized = false
 
 -- Dedupe of observed roll resolutions, so the same logical roll (identified by the ruleset's
@@ -137,6 +137,8 @@ local function getCombinedRoll(rRoll)
 			if status and combinedRoll then
 				combinedRoll.aDice = { combinedRoll.aDice[1], rRoll.aDice[1] }
 				combinedRoll.sDesc = combinedRoll.sDesc .. rRoll.sDesc
+				if rRoll.bSecret then combinedRoll.bSecret = true end
+				if rRoll.bTower then combinedRoll.bTower = true end
 				return combinedRoll
 			end
 		end
@@ -337,10 +339,14 @@ function onInit()
 	LOCALIZED_STEALTH_LOWER = LOCALIZED_STEALTH:lower()
 	USER_ISHOST = (Session and Session.IsHost) or (User and User.isHost and User.isHost()) or false
 
-    -- Initiation hook (for forcing secret rolls)
+    -- Initiation hooks (for forcing secret rolls before dice are thrown)
     if ActionSkill then
         ActionSkill_onRoll_Original = ActionSkill.onRoll
         ActionSkill.onRoll = onInitiateSkill
+    end
+    if ActionsManager and ActionsManager.performAction and ActionsManager.performAction ~= onPerformAction then
+        ActionsManager_performAction_Original = ActionsManager.performAction
+        ActionsManager.performAction = onPerformAction
     end
 
     -- Roll types actually registered by the CyberpunkRED ruleset (CommonRolls.lua). Note "attack"
@@ -382,12 +388,22 @@ function onInit()
             { labels = option_val_on, values = ON, baselabel = "option_val_off", baseval = OFF, default = OFF })
 
         CombatManager.setCustomCombatReset(onCombatResetEvent)
-		if CombatDropManager and CombatDropManager.registerLegacyDropCallback then
-			CombatDropManager.registerLegacyDropCallback(onDrop)
+		if CombatDropManager and CombatDropManager.handleAnyDrop then
+			local fOriginalHandleAnyDrop = CombatDropManager.handleAnyDrop
+			CombatDropManager.handleAnyDrop = function(draginfo, sTargetPath, ...)
+				if sTargetPath and sTargetPath ~= "" and draginfo then
+					local rSource = ActionsManager.decodeActors(draginfo)
+					local rTarget = getActorSafe(sTargetPath)
+					onDropEvent(rSource, rTarget, draginfo)
+				end
+				return fOriginalHandleAnyDrop(draginfo, sTargetPath, ...)
+			end
+		elseif CombatDropManager and CombatDropManager.registerLegacyDropCallback then
+			CombatDropManager.registerLegacyDropCallback(onDropEvent)
 		elseif CombatDropManager and CombatDropManager.onLegacyDropEvent then
 			local fOriginalLegacyDrop = CombatDropManager.onLegacyDropEvent
 			CombatDropManager.onLegacyDropEvent = function(rSource, rTarget, draginfo)
-				onDrop(rSource, rTarget, draginfo)
+				onDropEvent(rSource, rTarget, draginfo)
 				if fOriginalLegacyDrop then
 					fOriginalLegacyDrop(rSource, rTarget, draginfo)
 				end
@@ -567,7 +583,7 @@ end
 
 function displayDebilitatingConditionChatMessage(vActor, sCondition, bForce)
 	if not bForce and checkVerbosityOff() then return end
-	local sText = string.format("%s is %s, skipping StealthTracker processing.", ActorManager.getDisplayName(vActor), sCondition)
+	local sText = string.format("%s is %s, skipping StealthTracker processing.", getActorDisplayNameSafe(vActor), sCondition)
 	displayChatMessage(sText, SECRET)
 end
 
@@ -595,12 +611,12 @@ function displayProcessAttackFromStealth(rSource, rTarget)
 	if rTarget then
 		local rHiddenTarget = isTargetHiddenFromSource(rSource, rTarget)
 		if rHiddenTarget and rHiddenTarget.hidden then
-			local sMsgText = string.format("Target hidden. Attack possible? (%s %s: %d, %s Perception: %d).",
-											ActorManager.getDisplayName(rTarget),
+			local sMsgText = string.format("Target hidden. Attack possible? (%s %s: %d, %s Perception: %s).",
+											getActorDisplayNameSafe(rTarget),
 											LOCALIZED_STEALTH_ABV,
 											rHiddenTarget.stealth,
-											ActorManager.getDisplayName(rSource),
-											rHiddenTarget.sourcePP)
+											getActorDisplayNameSafe(rSource),
+											getFormattedPPString(rHiddenTarget.sourcePP, rHiddenTarget.sourcePPMod))
 			table.insert(aOutput, sMsgText)
 		end
 
@@ -622,17 +638,20 @@ end
 function displayProcessStealthUpdateForSkillHandlers(rSource, rRoll)
 	local nodeSourceCT = ActorManager.getCTNode(rSource)
 	if nodeSourceCT and ActionsManager.doesRollHaveDice(rRoll) then
-		local sCTNodePath = getNodePathSafe(nodeSourceCT) or ""
+		local sCTNodePath = getActiveDuplicateCTNodePath(getNodePathSafe(nodeSourceCT) or "")
+		nodeSourceCT = ActorManager.getCTNode(sCTNodePath) or nodeSourceCT
 		local nStealthTotal = ActionsManager.total(rRoll)
+		local bSecret = (rRoll.bSecret == true or rRoll.bSecret == 1 or rRoll.bSecret == "1"
+						 or rRoll.bTower == true or rRoll.bTower == 1 or rRoll.bTower == "1")
 		if USER_ISHOST then
 			if checkAndDisplayAllowOutOfCombatAndTurnChecks(sCTNodePath) then
-				setNodeWithStealthValue(sCTNodePath, nStealthTotal)
+				setNodeWithStealthValue(sCTNodePath, nStealthTotal, bSecret)
                 if OptionsManager.getOption(STEALTHTRACKER_SHOW_AFTER_STEALTH) == ON then
                     displayStealthCheckInformationWithConditionAndVerboseChecks(nodeSourceCT, FORCE_DISPLAY)
                 end
 			end
 		else
-			notifyUpdateStealth(sCTNodePath, nStealthTotal)
+			notifyUpdateStealth(sCTNodePath, nStealthTotal, bSecret)
 		end
 	end
 end
@@ -644,14 +663,16 @@ function displayProcessActivePerception(rSource, rRoll)
 
 	local nPerceptionRollTotal = ActionsManager.total(rRoll)
 	local aOutput = {}
-	local sSourceDisplayName = ActorManager.getDisplayName(rSource)
+	local sSourceDisplayName = getActorDisplayNameSafe(rSource)
+	local sSourcePath = getNodePathSafe(nodeSourceCT)
 	
 	local lCombatTrackerActors = CombatManager.getSortedCombatantList()
 	for _, nodeCT in ipairs(lCombatTrackerActors) do
-		if isValidCTNode(nodeCT) and nodeCT ~= nodeSourceCT then
+		if isValidCTNode(nodeCT) and getNodePathSafe(nodeCT) ~= sSourcePath and
+		   (not checkFactionFilter() or isDifferentFaction(nodeSourceCT, nodeCT)) then
 			local nStealthTarget = getStealthNumberFromEffects(nodeCT)
 			if nStealthTarget then
-				local sTargetName = ActorManager.getDisplayName(nodeCT)
+				local sTargetName = getActorDisplayNameSafe(nodeCT)
 				-- NOTE: No angle brackets in chat text. Chat entries rendered with a frame style go
 				-- through a FormattedText control that parses the text as XML, and a raw "<" throws
 				-- "FormattedText SetValue XML Error: Name cannot begin with the ' ' character".
@@ -693,9 +714,9 @@ function displayTowerRoll()
 	displayChatMessage("An attack was rolled in the tower. Attacks should be rolled in the open for proper StealthTracker processing.", USER_ISHOST)
 end
 
-function doesTargetPerceiveAttackerFromStealth(nAttackerStealth, rTarget)
+function doesTargetPerceiveAttackerFromStealth(nAttackerStealth, rTarget, rAttacker)
 	if nAttackerStealth == nil or not rTarget then return false end
-	local nPPTarget = getPassivePerceptionNumber(rTarget)
+	local nPPTarget = getPassivePerceptionWithModifier(rTarget, rAttacker)
 	return nPPTarget ~= nil and nPPTarget >= nAttackerStealth
 end
 
@@ -743,7 +764,7 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 			if rSkillsStringNode then
 				if rSkillsStringNode.getType() == "string" then
 					local sSkills = rSkillsStringNode.getText()
-					if not sSkills:match(LOCALIZED_STEALTH .. " [+-]%d") then
+					if not sSkills:lower():match(LOCALIZED_STEALTH_LOWER .. "%s+[+-]?%d") then
 						local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
 						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
 						local sNewSkillsValue = sStealthWithMod .. ", " .. sSkills
@@ -786,7 +807,7 @@ function expireStealthEffectOnCTNode(rActor, aOutput)
 	if nodeLastEffectWithStealth then
 		if checkExpireNone() then
 			if checkVerbosityMax() then
-				local sText = string.format("%s took an action from stealth that should expire the effect.", ActorManager.getDisplayName(rActor))
+				local sText = string.format("%s took an action from stealth that should expire the effect.", getActorDisplayNameSafe(rActor))
 				insertFormattedTextWithSeparatorIfNonEmpty(aOutput, sText)
 			end
 		else
@@ -799,6 +820,37 @@ function expireStealthEffectOnCTNode(rActor, aOutput)
 			end
 		end
 	end
+end
+
+-- Helper to resolve the active CT node path when multiple CT entries share the same creature record or name
+function getActiveDuplicateCTNodePath(sCTNode)
+	if not sCTNode or sCTNode == "" then return sCTNode end
+	local nodeCT = ActorManager.getCTNode(sCTNode)
+	if not nodeCT then return sCTNode end
+
+	local nodeActiveCT = CombatManager.getActiveCT()
+	if not nodeActiveCT then return sCTNode end
+
+	local sActivePath = getNodePathSafe(nodeActiveCT)
+	local sCurrentPath = getNodePathSafe(nodeCT) or sCTNode
+	if not sActivePath or sActivePath == sCurrentPath then return sCTNode end
+
+	-- Check if active CT node is a duplicate of the rolling CT node (same underlying creature node or same non-empty name)
+	local nodeCreature = ActorManager.getCreatureNode(nodeCT)
+	local nodeActiveCreature = ActorManager.getCreatureNode(nodeActiveCT)
+	local sCreaturePath = getNodePathSafe(nodeCreature)
+	local sActiveCreaturePath = getNodePathSafe(nodeActiveCreature)
+	if sCreaturePath and sActiveCreaturePath and sCreaturePath == sActiveCreaturePath and sCreaturePath ~= sCurrentPath then
+		return sActivePath
+	end
+
+	local sName = DB.getValue(nodeCT, "name", "")
+	local sActiveName = DB.getValue(nodeActiveCT, "name", "")
+	if sName ~= "" and sName == sActiveName then
+		return sActivePath
+	end
+
+	return sCTNode
 end
 
 function getActorDebilitatingCondition(vActor)
@@ -815,6 +867,17 @@ function getActorDebilitatingCondition(vActor)
 		if hasEffectSafe(rActor, sCondition) then return sCondition end
 	end
 	return nil
+end
+
+function getActorDisplayNameSafe(vActor)
+	if not vActor then return UNIDENTIFIED end
+	local nodeCT = ActorManager.getCTNode(vActor)
+	local rActor = getActorSafe(vActor) or vActor
+	local sDisplayName = ActorManager.getDisplayName(rActor)
+	if isBlankSafe(sDisplayName) or (nodeCT and isUnidentifiedNpc(nodeCT)) or isUnidentifiedNpc(rActor) then
+		sDisplayName = getUnidentifiedName(nodeCT or ActorManager.getCreatureNode(rActor) or rActor)
+	end
+	return sDisplayName
 end
 
 -- Base Perception check calculation (Cyberpunk RED compatible)
@@ -845,6 +908,42 @@ function getPassivePerceptionNumber(vActor)
     return modifyPassivePerceptionForActorEffects(nodeCreature, nPP)
 end
 
+-- Returns the observer's effective Passive Perception and any modifier caused by stealth-related effects on the subject.
+function getPassivePerceptionWithModifier(rObserver, rSubject)
+	local nPP = getPassivePerceptionNumber(rObserver)
+	local nMod = getStealthEffectModifier(rSubject)
+	if nPP == nil then return nil, nMod end
+	return nPP + nMod, nMod
+end
+
+-- Sums any Passive Perception modifiers imposed on observers by effects on the hiding actor (defined in STEALTH_EFFECT_MODIFIERS).
+function getStealthEffectModifier(vActor)
+	local nMod = 0
+	local rActor = getActorSafe(vActor)
+	if not rActor or not STEALTH_EFFECT_MODIFIERS then return nMod end
+
+	for sEffectName, nEffectMod in pairs(STEALTH_EFFECT_MODIFIERS) do
+		if hasEffectSafe(rActor, sEffectName) then
+			nMod = nMod + nEffectMod
+		end
+	end
+
+	return nMod
+end
+
+function getFormattedPPString(nPPEffective, nPPMod)
+	if not nPPEffective then return "" end
+	if not nPPMod or nPPMod == 0 then
+		return string.format("%d", nPPEffective)
+	end
+	local nBase = nPPEffective - nPPMod
+	if nPPMod > 0 then
+		return string.format("%d [%d + %d]", nPPEffective, nBase, nPPMod)
+	else
+		return string.format("%d [%d - %d]", nPPEffective, nBase, math.abs(nPPMod))
+	end
+end
+
 function getFormattedAndClearAllStealthTrackerDataFromCTIfAllowed(aOutput, bForce)
 	aOutput = validateTableOrNew(aOutput)
 	if checkAllowOutOfCombat() and not bForce then
@@ -866,13 +965,14 @@ function getFormattedPerformAttackFromStealth(rSource, rTarget, nStealthSource, 
 
 	aOutput = validateTableOrNew(aOutput)
 	local sMsgText
-	local sStats = string.format("(%s %s: %d, %s Perception: %d)",
-								 ActorManager.getDisplayName(rSource),
+	local nPPEffective, nPPMod = getPassivePerceptionWithModifier(rTarget, rSource)
+	local sStats = string.format("(%s %s: %d, %s Perception: %s)",
+								 getActorDisplayNameSafe(rSource),
 								 LOCALIZED_STEALTH_ABV,
 								 nStealthSource,
-								 ActorManager.getDisplayName(rTarget),
-								 getPassivePerceptionNumber(rTarget))
-	if not doesTargetPerceiveAttackerFromStealth(nStealthSource, rTarget) then
+								 getActorDisplayNameSafe(rTarget),
+								 getFormattedPPString(nPPEffective, nPPMod))
+	if not doesTargetPerceiveAttackerFromStealth(nStealthSource, rTarget, rSource) then
 		sMsgText = string.format("Attacker is hidden (Ambush). Target cannot dodge? %s", sStats)
 	elseif checkVerbosityMax() then
 		sMsgText = string.format("Attacker not hidden. %s", sStats)
@@ -897,10 +997,7 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
 	local rCurrentActor = getActorSafe(nodeCTSource)
 	if not rCurrentActor then return rStealthData end
 
-    local sCTSourceDisplayName = ActorManager.getDisplayName(rCurrentActor)
-    if isBlankSafe(sCTSourceDisplayName) or isUnidentifiedNpc(nodeCTSource) then
-        sCTSourceDisplayName = getUnidentifiedName(nodeCTSource)
-    end
+    local sCTSourceDisplayName = getActorDisplayNameSafe(nodeCTSource)
 
     local nStealthSource = getStealthNumberFromEffects(nodeCTSource)
 	local lCombatTrackerActors = CombatManager.getSortedCombatantList()
@@ -908,10 +1005,7 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
         if isValidCTNode(nodeCT) then
             local rIterationActor = getActorSafe(nodeCT)
             if rIterationActor then
-                local sIterationActorDisplayName = ActorManager.getDisplayName(rIterationActor)
-                if isBlankSafe(sIterationActorDisplayName) or isUnidentifiedNpc(nodeCT) then
-                    sIterationActorDisplayName = getUnidentifiedName(nodeCT)
-                end
+                local sIterationActorDisplayName = getActorDisplayNameSafe(nodeCT)
 
                 local sDebilitatingCondition = getActorDebilitatingCondition(rIterationActor)
                 if rCurrentActor.sCTNode ~= rIterationActor.sCTNode and
@@ -928,9 +1022,11 @@ function getFormattedStealthDataFromCT(nodeCTSource, aOutput)
 
                     if nStealthSource ~= nil then
                         local sText = string.format("%s", sIterationActorDisplayName)
-                        local sPPText = string.format(" - Perception: %d", getPassivePerceptionNumber(rIterationActor))
+                        local nPPEffective, nPPMod = getPassivePerceptionWithModifier(rIterationActor, rCurrentActor)
+                        local sPPDisplay = getFormattedPPString(nPPEffective, nPPMod)
+                        local sPPText = string.format(" - Perception: %s", sPPDisplay)
                         local sConditionFormat = " - Condition: %s"
-                        if doesTargetPerceiveAttackerFromStealth(nStealthSource, rIterationActor) then
+                        if doesTargetPerceiveAttackerFromStealth(nStealthSource, rIterationActor, rCurrentActor) then
                             if sDebilitatingCondition == nil then
                                 table.insert(rStealthData.aware, sText .. sPPText)
                             else
@@ -1079,10 +1175,12 @@ function handleUpdateStealth(msgOOB)
 	local nStealthTotal = tonumber(msgOOB.nStealthTotal)
 	if nStealthTotal == nil then return end
 
-	if checkAndDisplayAllowOutOfCombatAndTurnChecks(msgOOB.sCTNodeId) then
-		setNodeWithStealthValue(msgOOB.sCTNodeId, nStealthTotal)
+	local bSecret = (msgOOB.bSecret == "1" or msgOOB.bSecret == 1 or msgOOB.bSecret == true)
+	local sTargetCTNode = getActiveDuplicateCTNodePath(msgOOB.sCTNodeId)
+	if checkAndDisplayAllowOutOfCombatAndTurnChecks(sTargetCTNode) then
+		setNodeWithStealthValue(sTargetCTNode, nStealthTotal, bSecret)
         if OptionsManager.getOption(STEALTHTRACKER_SHOW_AFTER_STEALTH) == ON then
-            local nodeSourceCT = ActorManager.getCTNode(msgOOB.sCTNodeId)
+            local nodeSourceCT = ActorManager.getCTNode(sTargetCTNode)
             displayStealthCheckInformationWithConditionAndVerboseChecks(nodeSourceCT, FORCE_DISPLAY)
         end
 	end
@@ -1118,7 +1216,13 @@ function isNpc(vActor)
 end
 
 function isPlayerStealthInfoDisabled()
-	return OptionsManager.getOption(STEALTHTRACKER_VISIBILITY) == NONE
+	if OptionsManager and OptionsManager.getOption and OptionsManager.getOption(STEALTHTRACKER_VISIBILITY) == NONE then
+		return true
+	end
+	if DB and DB.getValue and DB.getValue("options." .. STEALTHTRACKER_VISIBILITY, "") == NONE then
+		return true
+	end
+	return false
 end
 
 function isStealthSkillRoll(sRollData)
@@ -1174,12 +1278,13 @@ function isTargetHiddenFromSource(rSource, rTarget)
 	if not rTargetCTNode then return end
 
     local data = nil
-    local nPPSource = getPassivePerceptionNumber(rSource)
+    local nPPSource, nPPMod = getPassivePerceptionWithModifier(rSource, rTarget)
 	local nStealthTarget = getStealthNumberFromEffects(rTargetCTNode)
 	if nStealthTarget ~= nil and nPPSource ~= nil then
         data = {
             source = rSource,
             sourcePP = nPPSource,
+            sourcePPMod = nPPMod,
             target = rTarget,
             stealth = nStealthTarget
         }
@@ -1225,34 +1330,30 @@ function resolveTargetDuplicateCTNode(rSource, rTarget)
 			if nodeTCT then
 				local sTName = ActorManager.getDisplayName(rT)
 				if StringManager.trim(sTName) == StringManager.trim(sTargetName) then
-					if Debug and Debug.console then
-						Debug.console("StealthTracker-CyberpunkRED: Redirecting target to attacker's explicit target by name:", nodeTCT.getPath())
-					end
 					return rT
 				end
 			end
 		end
 	end
 	
-	-- 2. Fallback for drops: Find if any CT entry with the same name is actively hidden
+	-- 2. Fallback for drops: Find if any CT entry with the same name is actively hidden (preferring highest Stealth score)
 	local nodeHighestPriorityCT = nil
+	local nHighestStealth = -999999
 	local lCombatTrackerActors = CombatManager.getSortedCombatantList and CombatManager.getSortedCombatantList() or {}
 	for _, nodeCT in ipairs(lCombatTrackerActors) do
 		local sCTName = ActorManager.getDisplayName(nodeCT)
 		if sCTName == sTargetName then
-			local bIsHidden = getStealthNumberFromEffects(nodeCT) ~= nil
-			if bIsHidden then
+			local nStealth = getStealthNumberFromEffects(nodeCT)
+			if nStealth ~= nil and nStealth > nHighestStealth then
+				nHighestStealth = nStealth
 				nodeHighestPriorityCT = nodeCT
 			end
 		end
 	end
 	
-	if nodeHighestPriorityCT and nodeHighestPriorityCT.getPath() ~= nodeTargetCT.getPath() then
-		local rNewTarget = ActorManager.resolveActor(nodeHighestPriorityCT)
+	if nodeHighestPriorityCT and getNodePathSafe(nodeHighestPriorityCT) ~= getNodePathSafe(nodeTargetCT) then
+		local rNewTarget = getActorSafe(nodeHighestPriorityCT)
 		if rNewTarget then
-			if Debug and Debug.console then
-				Debug.console("StealthTracker-CyberpunkRED: Redirecting target to hiding duplicate by name:", nodeHighestPriorityCT.getPath())
-			end
 			return rNewTarget
 		end
 	end
@@ -1275,13 +1376,16 @@ function notifyAttackFromStealth(sSourceCTNode, sTargetCTNode)
 	Comm.deliverOOBMessage(msgOOB, "")
 end
 
-function notifyUpdateStealth(sCTNodeId, nStealthTotal)
+function notifyUpdateStealth(sCTNodeId, nStealthTotal, bSecret)
 	if sCTNodeId == nil or nStealthTotal == nil then return end
 	local msgOOB = {}
 	msgOOB.type = OOB_MSGTYPE_UPDATESTEALTH
 	msgOOB.user = User.getUsername()
 	msgOOB.sCTNodeId = sCTNodeId
 	msgOOB.nStealthTotal = nStealthTotal
+	if bSecret then
+		msgOOB.bSecret = "1"
+	end
 	Comm.deliverOOBMessage(msgOOB, "")
 end
 
@@ -1303,14 +1407,27 @@ function onDrop(nodetype, nodename, draginfo)
 end
 
 function onDropEvent(rSource, rTarget, draginfo)
-	if rSource or not USER_ISHOST or not rTarget or not rTarget.sCTNode or not draginfo then return end
+	if not USER_ISHOST or not rTarget or not rTarget.sCTNode or not draginfo then return end
+	local sDragType = (draginfo.getType and draginfo.getType()) or ""
+	if rSource and sDragType ~= "number" then return end
 
-	local sDragInfoData = draginfo.getStringData()
-	if sDragInfoData == nil or sDragInfoData == "" then return end
+	local sDragInfoData = (draginfo.getStringData and draginfo.getStringData()) or ""
+	if sDragInfoData == "" and draginfo.getDescription then
+		sDragInfoData = draginfo.getDescription() or ""
+	end
+	if sDragInfoData == "" then return end
 
 	local nStealthValue = draginfo.getNumberData()
 	if nStealthValue and (isStealthSkillRoll(sDragInfoData) or isDexterityCheckRoll(sDragInfoData)) then
-		setNodeWithStealthValue(rTarget.sCTNode, nStealthValue)
+		local sLower = sDragInfoData:lower()
+		local sTowerTag = (Interface and Interface.getString and Interface.getString("dicetower_tag")) or "tower"
+		sTowerTag = (sTowerTag ~= "" and sTowerTag:lower()) or "tower"
+		local bSecret = (draginfo.getSecret and draginfo.getSecret())
+			or sLower:match("%[" .. sTowerTag .. "%]") ~= nil
+			or sLower:match("%[tower%]") ~= nil
+			or sLower:match("%[gm%]") ~= nil
+			or false
+		setNodeWithStealthValue(rTarget.sCTNode, nStealthValue, bSecret)
 	end
 end
 
@@ -1323,7 +1440,8 @@ end
 function onInitiateSkill(rSource, rTarget, rRoll)
 	local bProcessStealth = rSource and rRoll and isStealthSkillRoll(rRoll.sDesc)
 	if bProcessStealth then
-		if isPlayerStealthInfoDisabled() or (isNpc(rSource) and CombatManager.isCTHidden(rSource)) then
+		local nodeSourceCT = ActorManager.getCTNode(rSource)
+		if isPlayerStealthInfoDisabled() or (isNpc(rSource) and CombatManager.isCTHidden(rSource)) or (nodeSourceCT and CombatManager.isCTHidden(nodeSourceCT)) then
 			rRoll.bSecret = true
 		end
 	end
@@ -1332,9 +1450,33 @@ function onInitiateSkill(rSource, rTarget, rRoll)
     end
 end
 
+function onPerformAction(draginfo, rActor, rRoll, ...)
+	local bProcessStealth = rActor and rRoll and isStealthSkillRoll(rRoll.sDesc)
+	if bProcessStealth then
+		local nodeSourceCT = ActorManager.getCTNode(rActor)
+		if isPlayerStealthInfoDisabled() or (isNpc(rActor) and CombatManager.isCTHidden(rActor)) or (nodeSourceCT and CombatManager.isCTHidden(nodeSourceCT)) then
+			rRoll.bSecret = true
+		end
+	end
+	if type(ActionsManager_performAction_Original) == "function" then
+		return ActionsManager_performAction_Original(draginfo, rActor, rRoll, ...)
+	end
+end
+
 -- Shared attack processing, called with the FINAL roll for a logical attack: the initial roll for
 -- normal attacks, or the combined roll when a crit continuation lands.
 function processAttackRoll(rSource, rTarget, rRoll)
+	if rSource and rSource.sCTNode and rSource.sCTNode ~= "" then
+		local sNewPath = getActiveDuplicateCTNodePath(rSource.sCTNode)
+		if sNewPath ~= rSource.sCTNode then
+			rSource.sCTNode = sNewPath
+		end
+	end
+
+	if rTarget then
+		rTarget = resolveTargetDuplicateCTNode(rSource, rTarget)
+	end
+
 	local sKey = getRollProcessingKey("attack", rTarget, rRoll)
 	if sKey then
 		if aProcessedRollKeys[sKey] then return end
@@ -1369,6 +1511,13 @@ end
 -- Post-resolve observer for skill-type rolls (including the crit continuation rolls). Runs AFTER
 -- the ruleset's own result handler - it never calls or replaces that handler.
 function onRollSkill(rSource, rTarget, rRoll)
+	if rSource and rSource.sCTNode and rSource.sCTNode ~= "" then
+		local sNewPath = getActiveDuplicateCTNodePath(rSource.sCTNode)
+		if sNewPath ~= rSource.sCTNode then
+			rSource.sCTNode = sNewPath
+		end
+	end
+
 	local rProcessedRoll = getCombinedRoll(rRoll)
 	if not rSource or not rProcessedRoll or not ActionsManager.doesRollHaveDice(rProcessedRoll) then return end
 
@@ -1447,7 +1596,7 @@ function requestActivation(nodeEntry, bSkipBell)
     end
 end
 
-function setNodeWithStealthValue(sCTNode, nStealthTotal)
+function setNodeWithStealthValue(sCTNode, nStealthTotal, bSecret)
 	if sCTNode == nil or nStealthTotal == nil then return end
 
 	local nodeCT = ActorManager.getCTNode(sCTNode)
@@ -1463,7 +1612,7 @@ function setNodeWithStealthValue(sCTNode, nStealthTotal)
 		nEffectDuration = 2
 	end
 
-	local nEffectGMOnly = booleanToNumber(isPlayerStealthInfoDisabled() or (isNpc(nodeCT) and not isFriend(nodeCT)))
+	local nEffectGMOnly = booleanToNumber((bSecret and true or false) or isPlayerStealthInfoDisabled() or (isNpc(nodeCT) and not isFriend(nodeCT)))
 	local rEffect = {
 		sName = sEffectName,
 		nInit = nEffectExpirationInit,

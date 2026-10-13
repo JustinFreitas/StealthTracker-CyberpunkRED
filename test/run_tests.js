@@ -796,6 +796,325 @@ async function runTests() {
         `
     );
 
+    // --- GROUP S: v1.7 Dice Tower Auto-GM-Only & Client-Side Option Lookup ---
+    await runAssert(
+        "v1.7 dice-tower-auto-gm-only-and-client-option-lookup",
+        "",
+        `
+        local failures = {}
+        local function fail(msg) table.insert(failures, msg) end
+
+        -- 1. Client-side DB fallback in isPlayerStealthInfoDisabled when OptionsManager returns ""
+        do
+            local fRealGetOption = OptionsManager.getOption
+            local fRealDBGetValue = DB.getValue
+
+            OptionsManager.getOption = function(key) return "" end
+            DB.getValue = function(nodeOrPath, pathOrDefault, defaultVal)
+                if nodeOrPath == "options.STEALTHTRACKER_VISIBILITY" then
+                    return "none"
+                end
+                return fRealDBGetValue(nodeOrPath, pathOrDefault, defaultVal)
+            end
+
+            if not isPlayerStealthInfoDisabled() then
+                fail("isPlayerStealthInfoDisabled failed to detect 'none' via DB.getValue on client")
+            end
+
+            local rRoll = { sType = "skillroll", sDesc = "Stealth Check" }
+            local rSource = createMockNode({ recordType = "pc" })
+            onInitiateSkill(rSource, nil, rRoll)
+            if rRoll.bSecret ~= true then
+                fail("onInitiateSkill failed to set rRoll.bSecret = true on client when DB option is 'none'")
+            end
+
+            DB.getValue = function(nodeOrPath, pathOrDefault, defaultVal)
+                if nodeOrPath == "options.STEALTHTRACKER_VISIBILITY" then
+                    return "effects"
+                end
+                return fRealDBGetValue(nodeOrPath, pathOrDefault, defaultVal)
+            end
+            if isPlayerStealthInfoDisabled() then
+                fail("isPlayerStealthInfoDisabled returned true when DB option is 'effects'")
+            end
+
+            OptionsManager.getOption = fRealGetOption
+            DB.getValue = fRealDBGetValue
+        end
+
+        -- 2. Dice Tower / secret PC stealth roll (including crit continuation) creates GM-only effect
+        do
+            local lastAddEffectParams = nil
+            local fRealAddEffect = EffectManager.addEffect
+            EffectManager.addEffect = function(sUser, sIdentity, nodeCT, rEffect, bShowMsg)
+                lastAddEffectParams = { rEffect = rEffect, bShowMsg = bShowMsg }
+                local nodeEffects = nodeCT.getChild("effects")
+                if not nodeEffects then
+                    nodeEffects = createMockNode({})
+                    nodeCT.data["effects"] = nodeEffects.data
+                end
+                local nodeNewEffect = createMockNode({
+                    label = rEffect.sName,
+                    isgmonly = rEffect.nGMOnly or 0
+                })
+                nodeEffects.data["eff1"] = nodeNewEffect.data
+            end
+
+            local mockPC = createMockNode({
+                recordType = "pc",
+                faction = "friend",
+                initresult = 14,
+                effects = {}
+            })
+            function mockPC.getPath() return "combattracker.list.id-00001" end
+
+            local fRealGetCTNode = ActorManager.getCTNode
+            ActorManager.getCTNode = function(s) return mockPC end
+            local fRealActive = CombatManager.getActiveCT
+            CombatManager.getActiveCT = function() return mockPC end
+
+            USER_ISHOST = true
+            OptionsManager_mock_options["STEALTHTRACKER_ALLOW_OUT_OF"] = "off"
+            OptionsManager_mock_options["STEALTHTRACKER_VISIBILITY"] = "effects"
+
+            -- Roll with bTower = true
+            local rTowerRoll = {
+                sType = "skillroll",
+                sDesc = "Stealth Check",
+                aDice = { { type = "d10", result = 7 } },
+                nMod = 5,
+                bTower = true
+            }
+            onRollSkill(mockPC, nil, rTowerRoll)
+
+            if not lastAddEffectParams or lastAddEffectParams.rEffect.nGMOnly ~= 1 then
+                fail("Tower PC stealth roll did not set nGMOnly = 1 when visibility = 'effects'")
+            end
+            if mockPC.data.effects.eff1.isgmonly ~= 1 then
+                fail("Tower PC stealth roll did not set DB isgmonly = 1")
+            end
+            if lastAddEffectParams.bShowMsg ~= false then
+                fail("Tower PC stealth roll did not suppress chat message")
+            end
+
+            -- Exploding crit continuation roll with bSecret = true on continuation roll and visibility = 'all'
+            OptionsManager_mock_options["STEALTHTRACKER_VISIBILITY"] = "all"
+            mockPC.data["effects"] = {}
+            lastAddEffectParams = nil
+            local rCritSecretRoll = {
+                sType = "critRoll",
+                sDesc = "+ 1d10 [Critical Success]",
+                sPrevRoll = '{"sType":"skillroll","sDesc":"Stealth Check","aDice":[{"type":"d10","result":10}],"nMod":4}',
+                aDice = { { type = "d10", result = 6 } },
+                bSecret = true
+            }
+            onRollSkill(mockPC, nil, rCritSecretRoll)
+
+            if not lastAddEffectParams or lastAddEffectParams.rEffect.nGMOnly ~= 1 or lastAddEffectParams.bShowMsg ~= false then
+                fail("Secret crit continuation stealth roll did not enforce GM-only and suppress chat when visibility = 'all'")
+            end
+
+            -- OOB round-trip from client with bSecret = true
+            USER_ISHOST = false
+            local sentOOB = nil
+            local fRealDeliverOOB = Comm.deliverOOBMessage
+            local fRealGetUsername = User.getUsername
+            User.getUsername = function() return "Player1" end
+            Comm.deliverOOBMessage = function(msg) sentOOB = msg end
+
+            displayProcessStealthUpdateForSkillHandlers(mockPC, {
+                sType = "skillroll",
+                sDesc = "Stealth Check",
+                aDice = { { type = "d10", result = 8 } },
+                nMod = 5,
+                bSecret = true
+            })
+            if not sentOOB or sentOOB.bSecret ~= "1" then
+                fail("notifyUpdateStealth did not serialize bSecret = '1' in OOB message")
+            end
+
+            USER_ISHOST = true
+            mockPC.data["effects"] = {}
+            lastAddEffectParams = nil
+            handleUpdateStealth(sentOOB)
+            if not lastAddEffectParams or lastAddEffectParams.rEffect.nGMOnly ~= 1 then
+                fail("handleUpdateStealth did not preserve bSecret from OOB message")
+            end
+
+            Comm.deliverOOBMessage = fRealDeliverOOB
+            User.getUsername = fRealGetUsername
+            EffectManager.addEffect = fRealAddEffect
+            ActorManager.getCTNode = fRealGetCTNode
+            CombatManager.getActiveCT = fRealActive
+        end
+
+        -- 3. Active Perception: path-based self-filter, faction filter, and unidentified NPC display name
+        do
+            local tSavedOpts = {}
+            for k, v in pairs(OptionsManager_mock_options) do tSavedOpts[k] = v end
+            OptionsManager_mock_options["STEALTHTRACKER_FACTION_FILTER"] = "on"
+
+            local mockScoutA = createMockNode({
+                recordType = "pc",
+                faction = "friend",
+                name = "Scout",
+                effects = { id1 = { label = "Stealth: 14" } }
+            })
+            function mockScoutA.getPath() return "combattracker.list.id-00010" end
+            -- Distinct table instance with same path (simulating FGU userdata reference inequality)
+            local mockScoutB = createMockNode({
+                recordType = "pc",
+                faction = "friend",
+                name = "Scout",
+                effects = { id1 = { label = "Stealth: 14" } }
+            })
+            function mockScoutB.getPath() return "combattracker.list.id-00010" end
+
+            local mockAlly = createMockNode({
+                recordType = "pc",
+                faction = "friend",
+                name = "Netrunner",
+                effects = { id1 = { label = "Stealth: 12" } }
+            })
+            function mockAlly.getPath() return "combattracker.list.id-00011" end
+
+            local mockEnemyUnid = createMockNode({
+                recordType = "npc",
+                faction = "foe",
+                isidentified = 0,
+                name = "Arasaka Ninja",
+                nonid_name = "Shadowy Operative",
+                effects = { id1 = { label = "Stealth: 15" } }
+            })
+            function mockEnemyUnid.getPath() return "combattracker.list.id-00012" end
+
+            local fRealGetCTNode = ActorManager.getCTNode
+            ActorManager.getCTNode = function(v)
+                if v == mockScoutA then return mockScoutA end
+                return v
+            end
+            local fRealSorted = CombatManager.getSortedCombatantList
+            CombatManager.getSortedCombatantList = function()
+                return { mockScoutB, mockAlly, mockEnemyUnid }
+            end
+
+            local sChatOut = nil
+            local fRealAddChat = Comm.addChatMessage
+            Comm.addChatMessage = function(msg) sChatOut = msg.text end
+
+            displayProcessActivePerception(mockScoutA, {
+                sType = "skillroll",
+                sDesc = "[Skill] Perception Check",
+                aDice = { { type = "d10", result = 10 } },
+                nMod = 6
+            })
+
+            if not sChatOut then
+                fail("displayProcessActivePerception produced no chat output")
+            else
+                if sChatOut:find("Scout", 10, true) then
+                    fail("displayProcessActivePerception compared actor against itself when userdata references differed: " .. sChatOut)
+                end
+                if sChatOut:find("Netrunner", 1, true) then
+                    fail("displayProcessActivePerception did not filter out same-faction ally when Faction Filter = ON: " .. sChatOut)
+                end
+                if sChatOut:find("Arasaka Ninja", 1, true) or not sChatOut:find("Shadowy Operative", 1, true) then
+                    fail("displayProcessActivePerception leaked unidentified NPC name instead of nonid_name: " .. sChatOut)
+                end
+            end
+
+            Comm.addChatMessage = fRealAddChat
+            CombatManager.getSortedCombatantList = fRealSorted
+            ActorManager.getCTNode = fRealGetCTNode
+            OptionsManager_mock_options = tSavedOpts
+        end
+
+        -- 4. Duplicate CT node redirection & highest-stealth target fallback & STEALTH_EFFECT_MODIFIERS
+        do
+            local mockBooster1 = createMockNode({
+                recordType = "npc",
+                faction = "foe",
+                name = "Maelstrom Ganger",
+                effects = { id1 = { label = "Stealth: 11" } }
+            })
+            function mockBooster1.getPath() return "combattracker.list.id-00021" end
+
+            local mockBooster2 = createMockNode({
+                recordType = "npc",
+                faction = "foe",
+                name = "Maelstrom Ganger",
+                effects = { id1 = { label = "Stealth: 19" } }
+            })
+            function mockBooster2.getPath() return "combattracker.list.id-00022" end
+
+            local fRealGetCTNode = ActorManager.getCTNode
+            ActorManager.getCTNode = function(v)
+                if v == "combattracker.list.id-00021" or v == mockBooster1 then return mockBooster1 end
+                if v == "combattracker.list.id-00022" or v == mockBooster2 then return mockBooster2 end
+                if type(v) == "table" and v.sCTNode == "combattracker.list.id-00021" then return mockBooster1 end
+                if type(v) == "table" and v.sCTNode == "combattracker.list.id-00022" then return mockBooster2 end
+                return fRealGetCTNode(v)
+            end
+            local fRealActive = CombatManager.getActiveCT
+            CombatManager.getActiveCT = function() return mockBooster2 end
+            local fRealSorted = CombatManager.getSortedCombatantList
+            CombatManager.getSortedCombatantList = function() return { mockBooster1, mockBooster2 } end
+
+            if getActiveDuplicateCTNodePath("combattracker.list.id-00021") ~= "combattracker.list.id-00022" then
+                fail("getActiveDuplicateCTNodePath failed to redirect to active duplicate CT node")
+            end
+
+            local rResolvedTarget = resolveTargetDuplicateCTNode({ sCTNode = "combattracker.list.id-00001" }, mockBooster1)
+            if rResolvedTarget ~= mockBooster2 then
+                fail("resolveTargetDuplicateCTNode did not pick duplicate with highest Stealth score")
+            end
+
+            CombatManager.getSortedCombatantList = fRealSorted
+            CombatManager.getActiveCT = fRealActive
+            ActorManager.getCTNode = fRealGetCTNode
+        end
+
+        -- 5. onDropEvent with FGU chat 'number' drag (getStringData() == '', getDescription() == '[TOWER] [Skill] Stealth')
+        do
+            local lastDropEffect = nil
+            local fRealAddEffect = EffectManager.addEffect
+            EffectManager.addEffect = function(sUser, sIdentity, nodeCT, rEffect, bShowMsg)
+                lastDropEffect = { rEffect = rEffect, bShowMsg = bShowMsg }
+            end
+
+            local mockDropPC = createMockNode({
+                recordType = "pc",
+                faction = "friend",
+                initresult = 12,
+                effects = {}
+            })
+            function mockDropPC.getPath() return "combattracker.list.id-00050" end
+            local fRealGetCTNode = ActorManager.getCTNode
+            ActorManager.getCTNode = function(s) return mockDropPC end
+
+            USER_ISHOST = true
+            OptionsManager_mock_options["STEALTHTRACKER_VISIBILITY"] = "effects"
+
+            local mockDragInfo = {
+                getType = function() return "number" end,
+                getStringData = function() return "" end,
+                getDescription = function() return "[TOWER] [Skill] Stealth" end,
+                getNumberData = function() return 21 end,
+                getSecret = function() return false end
+            }
+            onDropEvent(nil, { sCTNode = "combattracker.list.id-00050" }, mockDragInfo)
+            if not lastDropEffect or lastDropEffect.rEffect.sName ~= "Stealth: 21" or lastDropEffect.rEffect.nGMOnly ~= 1 then
+                fail("onDropEvent failed to apply GM-only Stealth: 21 from FGU chat number drag with [TOWER] description")
+            end
+
+            ActorManager.getCTNode = fRealGetCTNode
+            EffectManager.addEffect = fRealAddEffect
+        end
+
+        return table.concat(failures, "; ")
+        `
+    );
+
     // --- GROUP Q: Static source checks ---
     // No chat-bound string may contain a raw "<" (breaks FormattedText rendering, see GROUP P).
     function runStaticAssert(name, condition) {
