@@ -61,6 +61,7 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 
 ### v1.7.1
 * **CoreRPG Initiative Sync Hardening (Nov 2026)**: Added `sInitSource = "turn"` on duration-2 fractional stealth effects during round and action-based expiration checks (and restored the fractional `init` offset after `EffectManager.addEffect`) to maintain full compatibility with CoreRPG `ActorEffectManager.onInitResultUpdate` and `EffectVarManager.onEffectAddSetupInit`, preventing ruleset initiative synchronization from resetting fractional sub-turn offsets.
+* **Immediate NPC Stealth Skill Population & Stat/Skill Fixes**: Hooked `CombatRecordManager` NPC post-add and `onTabletopInit` so `Stealth` (`DEX + 0`) is populated as soon as an NPC enters the Combat Tracker (and on campaign load), with automatic UI refresh for open NPC sheets. Fixed `Reusable.getNPCSkillBaseFor` Lua `0`-truthiness check and `tryGetStatValue` fallback resolution, and added automatic `skillsCol` creation for zero-skill NPCs.
 
 ### v1.7
 * **Dice Tower & Secret Roll Privacy**: Stealth rolls made in the Dice Tower or secretly (`rRoll.bSecret` / `rRoll.bTower`, including critical continuation rolls and secret chat rolls dragged onto the CT) now automatically mark the resulting `Stealth: X` Combat Tracker effect as `GM Only` (`isgmonly = 1`) and suppress public chat announcements, even when `Player: Show Stealth info` is set to `Effects` or `Chat and Effects`.

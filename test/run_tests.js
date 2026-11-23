@@ -74,6 +74,21 @@ async function runTests() {
             end
             
             function node.getType() return "node" end
+            function node.createChild(name)
+                if name and name ~= "" then
+                    if type(node.data[name]) ~= "table" then
+                        node.data[name] = {}
+                    end
+                    return createMockNode(node.data[name])
+                end
+                local nIdx = 1
+                while node.data[string.format("id-%05d", nIdx)] ~= nil do
+                    nIdx = nIdx + 1
+                end
+                local sKey = string.format("id-%05d", nIdx)
+                node.data[sKey] = {}
+                return createMockNode(node.data[sKey])
+            end
             function node.getChildren()
                 local children = {}
                 for k, v in pairs(node.data) do
@@ -1202,6 +1217,76 @@ async function runTests() {
             OptionsManager.isOption = fRealIsOption
             EffectManager.addEffect = fRealAddEffect
             ActorManager.getCTNode = fRealGetCTNode
+        end
+
+        -- 7. NPC Stealth auto-population: Reusable 0-truthiness fix, DEX fallback fix, zero-skill skillsCol creation, CT post-add, and onTabletopInit
+        do
+            local fRealGetActor = ActorManager.getActor
+            local fRealGetRecordType = ActorManager.getRecordType
+            local fRealFindWindow = Interface.findWindow
+
+            ActorManager.getActor = function(n) return n end
+            ActorManager.getRecordType = function(r) return (r and r.data and r.data.recordType) or "npc" end
+
+            -- 7a. Reusable.getNPCSkillBaseFor returning 0 when Stealth is absent must NOT block adding Stealth,
+            -- and fallback dexterity stat (when dexCurrent is absent) must resolve to 6 instead of 0.
+            Reusable = {
+                getNPCSkillBaseFor = function() return 0, 0 end
+            }
+            local nWinRefreshes = 0
+            Interface.findWindow = function(sClass)
+                if sClass == "npc" then
+                    return { onLockChanged = function() nWinRefreshes = nWinRefreshes + 1 end }
+                end
+                return nil
+            end
+
+            local zeroSkillNpc = createMockNode({
+                recordType = "npc",
+                type = "Ganger",
+                dexterity = 6
+            })
+            ensureStealthSkillExistsOnNpc(zeroSkillNpc)
+            Reusable = nil
+
+            local createdCol = zeroSkillNpc.data.skillsCol
+            local firstSkill = createdCol and createdCol["id-00001"]
+            if not firstSkill or firstSkill.skillName ~= "Stealth" or firstSkill.skillBase ~= 6 or firstSkill.skillLvl ~= 0 then
+                fail("Expected zero-skill NPC to receive skillsCol Stealth with skillBase=6, got: " .. tostring(firstSkill and firstSkill.skillBase))
+            end
+            if nWinRefreshes ~= 1 then
+                fail("Expected open NPC window refresh once, got " .. tostring(nWinRefreshes))
+            end
+
+            -- Calling a second time must be idempotent (no duplicate Stealth node, no extra refresh)
+            ensureStealthSkillExistsOnNpc(zeroSkillNpc)
+            if createdCol["id-00002"] ~= nil or nWinRefreshes ~= 1 then
+                fail("Expected idempotent ensureStealthSkillExistsOnNpc when Stealth already exists")
+            end
+
+            -- 7b. Trap/Hazard NPCs must be skipped
+            local hazardNpc = createMockNode({ recordType = "npc", type = "Hazard", dexCurrent = 5 })
+            ensureStealthSkillExistsOnNpc(hazardNpc)
+            if hazardNpc.data.skillsCol ~= nil then
+                fail("Expected Hazard NPC to be skipped")
+            end
+
+            -- 7c. onTabletopInit scans existing CT combatants
+            local fRealGetCombatants = CombatManager.getCombatantNodes
+            local ctBooster = createMockNode({ recordType = "npc", type = "Boosterganger", dexCurrent = 7 })
+            CombatManager.getCombatantNodes = function() return { b = ctBooster } end
+            USER_ISHOST = true
+            onTabletopInit()
+            CombatManager.getCombatantNodes = fRealGetCombatants
+
+            local boosterSkill = ctBooster.data.skillsCol and ctBooster.data.skillsCol["id-00001"]
+            if not boosterSkill or boosterSkill.skillName ~= "Stealth" or boosterSkill.skillBase ~= 7 then
+                fail("Expected onTabletopInit to populate Stealth=7 on existing CT NPC")
+            end
+
+            Interface.findWindow = fRealFindWindow
+            ActorManager.getActor = fRealGetActor
+            ActorManager.getRecordType = fRealGetRecordType
         end
 
         return table.concat(failures, "; ")

@@ -44,6 +44,8 @@ VISIBLE = "visible"
 STEALTH_EFFECT_MODIFIERS = {}
 
 local ActionSkill_onRoll_Original, ActionsManager_performAction_Original, CombatManager_onDrop, CombatManager_requestActivation
+local _fNPCPostAddWrapper, _fPrevNPCPostAdd
+local _fRecordTypeEventWrapper, _fPrevRecordTypeEvent
 local bStealthTrackerInitialized = false
 
 -- Dedupe of observed roll resolutions, so the same logical roll (identified by the ruleset's
@@ -146,9 +148,9 @@ local function getCombinedRoll(rRoll)
 	return rRoll
 end
 
--- Helper to dynamically resolve stat values from character/NPC nodes (Cyberpunk RED compatible)
-local function getStatValueSafe(nodeActor, sStatName)
-    if not nodeActor then return 0 end
+-- Helper to dynamically resolve stat values from character/NPC nodes, returning nil if absent
+local function tryGetStatValue(nodeActor, sStatName)
+    if not nodeActor then return nil end
     local sNameLower = sStatName:lower()
     
     -- Check common direct paths (Cyberpunk RED INT/DEX properties use intCurrent, dexCurrent, etc.)
@@ -187,7 +189,12 @@ local function getStatValueSafe(nodeActor, sStatName)
         end
     end
     
-    return 0
+    return nil
+end
+
+-- Helper to dynamically resolve stat values from character/NPC nodes (Cyberpunk RED compatible)
+local function getStatValueSafe(nodeActor, sStatName)
+    return tryGetStatValue(nodeActor, sStatName) or 0
 end
 
 -- Helper to dynamically resolve skill values from character/NPC nodes (Cyberpunk RED compatible)
@@ -419,6 +426,51 @@ function onInit()
             CombatManager_requestActivation = CombatManager.requestActivation
             CombatManager.requestActivation = requestActivation
         end
+
+		-- Populate Stealth skill immediately when an NPC is added to the Combat Tracker.
+		if CombatRecordManager then
+			local bPostAddExecuted = false
+			if CombatRecordManager.setRecordTypePostAddCallback then
+				local fCurrent = CombatRecordManager.getRecordTypePostAddCallback and CombatRecordManager.getRecordTypePostAddCallback("npc")
+				if fCurrent ~= _fNPCPostAddWrapper then
+					_fPrevNPCPostAdd = fCurrent
+					_fNPCPostAddWrapper = function(tCustom)
+						local vRet
+						if _fPrevNPCPostAdd then
+							vRet = _fPrevNPCPostAdd(tCustom)
+						end
+						bPostAddExecuted = true
+						if tCustom and tCustom.nodeCT and isValidCTNode(tCustom.nodeCT) then
+							local bOk, sErr = pcall(ensureStealthSkillExistsOnNpc, tCustom.nodeCT)
+							if not bOk and Debug and Debug.console then
+								Debug.console("StealthTracker: error in onNPCPostAdd: " .. tostring(sErr))
+							end
+						end
+						return vRet
+					end
+					CombatRecordManager.setRecordTypePostAddCallback("npc", _fNPCPostAddWrapper)
+				end
+			end
+			-- Safety fallback in case ruleset custom onNPCAdd creates tCustom.nodeCT without returning true.
+			if CombatRecordManager.onRecordTypeEvent and CombatRecordManager.onRecordTypeEvent ~= _fRecordTypeEventWrapper then
+				_fPrevRecordTypeEvent = CombatRecordManager.onRecordTypeEvent
+				_fRecordTypeEventWrapper = function(sRecordType, tCustom, ...)
+					if sRecordType == "npc" then
+						bPostAddExecuted = false
+						local vRet = _fPrevRecordTypeEvent(sRecordType, tCustom, ...)
+						if not bPostAddExecuted and tCustom and tCustom.nodeCT and isValidCTNode(tCustom.nodeCT) then
+							local bOk, sErr = pcall(ensureStealthSkillExistsOnNpc, tCustom.nodeCT)
+							if not bOk and Debug and Debug.console then
+								Debug.console("StealthTracker: error in onRecordTypeEvent: " .. tostring(sErr))
+							end
+						end
+						return vRet
+					end
+					return _fPrevRecordTypeEvent(sRecordType, tCustom, ...)
+				end
+				CombatRecordManager.onRecordTypeEvent = _fRecordTypeEventWrapper
+			end
+		end
 
 		OOBManager.registerOOBMsgHandler(OOB_MSGTYPE_UPDATESTEALTH, handleUpdateStealth)
 		OOBManager.registerOOBMsgHandler(OOB_MSGTYPE_ATTACKFROMSTEALTH, handleAttackFromStealth)
@@ -720,11 +772,83 @@ function doesTargetPerceiveAttackerFromStealth(nAttackerStealth, rTarget, rAttac
 	return nPPTarget ~= nil and nPPTarget >= nAttackerStealth
 end
 
+local function trimSafe(s)
+	if type(s) ~= "string" then return "" end
+	if StringManager and StringManager.trim then
+		return StringManager.trim(s)
+	end
+	return (s:gsub("^%s*(.-)%s*$", "%1"))
+end
+
+local function escapeLuaPattern(s)
+	return (s:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
+local function hasStealthSkillInString(sSkills)
+	if isBlankSafe(sSkills) then return false end
+	local sTargetEsc = escapeLuaPattern(LOCALIZED_STEALTH_LOWER)
+	for sClause in sSkills:gmatch("[^,;\r\n]+") do
+		local sTrimmed = trimSafe(sClause):lower()
+		if sTrimmed:match("^" .. sTargetEsc .. "[^%a]") and sTrimmed:match("%d") then
+			return true
+		end
+	end
+	return false
+end
+
+function refreshOpenNpcWindow(nodeCT)
+	if not nodeCT or not Interface or not Interface.findWindow then return end
+	local sPath = getNodePathSafe(nodeCT)
+	local wNpc = Interface.findWindow("npc", nodeCT)
+	if not wNpc and sPath then
+		wNpc = Interface.findWindow("npc", sPath)
+	end
+	if not wNpc then return end
+
+	if WindowManager and WindowManager.callInnerWindowFunction and WindowManager.getReadOnlyState then
+		WindowManager.callInnerWindowFunction(wNpc, "update", WindowManager.getReadOnlyState(nodeCT))
+	end
+	if type(wNpc.onLockChanged) == "function" then
+		wNpc.onLockChanged()
+	elseif type(wNpc.update) == "function" then
+		wNpc.update()
+	end
+end
+
+function populateExistingCTNpcs()
+	if not USER_ISHOST or not CombatManager then return end
+	local tNodes = nil
+	if CombatManager.getAllCombatantNodes then
+		tNodes = CombatManager.getAllCombatantNodes()
+	end
+	if (not tNodes or next(tNodes) == nil) and CombatManager.getCombatantNodes then
+		tNodes = CombatManager.getCombatantNodes()
+	end
+	for _, nodeCT in pairs(tNodes or {}) do
+		if isValidCTNode(nodeCT) then
+			local bOk, sErr = pcall(ensureStealthSkillExistsOnNpc, nodeCT)
+			if not bOk and Debug and Debug.console then
+				Debug.console("StealthTracker: error populating CT NPC: " .. tostring(sErr))
+			end
+		end
+	end
+end
+
+function onTabletopInit()
+	if not USER_ISHOST then return end
+	populateExistingCTNpcs()
+end
+
 function ensureStealthSkillExistsOnNpc(nodeCT)
 	if not nodeCT then return end
 
 	local rCurrentActor = getActorSafe(nodeCT)
 	if not rCurrentActor or not isNpc(rCurrentActor) then return end
+
+	local sNpcType = DB.getText(nodeCT, "type", ""):lower()
+	if sNpcType:match("^%s*trap%s*$") or sNpcType:match("^%s*object%s*$") or sNpcType:match("^%s*hazard%s*$") or isStealthTrackerDisabledForActor(nodeCT) then
+		return
+	end
 
 	-- Check if Stealth skill is already defined on NPC
 	local bHasStealth = false
@@ -733,7 +857,8 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 	local rSkillsNode = nodeCT.getChild("skillsCol")
 	if rSkillsNode then
 		for _, nodeSkill in pairs(rSkillsNode.getChildren()) do
-			local sName = DB.getValue(nodeSkill, "skillName", ""):lower()
+			local sName = trimSafe(DB.getValue(nodeSkill, "skillName", "")):gsub("%(x2%)", "")
+			sName = trimSafe(sName):lower()
 			if sName == "stealth" then
 				bHasStealth = true
 				break
@@ -741,52 +866,79 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 		end
 	end
 
-	-- 2. Fallback to Reusable helper
-	if not bHasStealth and Reusable and Reusable.getNPCSkillBaseFor then
-		local nBase, nLvl = Reusable.getNPCSkillBaseFor(nodeCT, "Stealth")
-		if nBase then
-			bHasStealth = true
-		end
-	end
-
 	if not bHasStealth then
+		local nDex = tryGetStatValue(nodeCT, "dex") or tryGetStatValue(nodeCT, "dexterity") or 0
+		local bAdded = false
+
 		if rSkillsNode then
 			-- Official Cyberpunk RED NPC skills node
-			local nodeNewSkill = rSkillsNode.createChild()
-			DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
-			local nDex = getStatValueSafe(nodeCT, "dexCurrent") or getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
-			DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
-			DB.setValue(nodeNewSkill, "skillLvl", "number", 0)
-			DB.setValue(nodeNewSkill, "isVisible", "number", 1)
+			local nodeNewSkill = (DB.createChild and DB.createChild(rSkillsNode)) or (rSkillsNode.createChild and rSkillsNode.createChild())
+			if nodeNewSkill then
+				DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
+				DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
+				DB.setValue(nodeNewSkill, "skillLvl", "number", 0)
+				DB.setValue(nodeNewSkill, "isVisible", "number", 1)
+				bAdded = true
+			end
 		else
-			-- Fallback to list/string based formats
+			-- Check legacy string/node skills format, or create official skillsCol if neither exists
 			local rSkillsStringNode = nodeCT.getChild("skills")
 			if rSkillsStringNode then
 				if rSkillsStringNode.getType() == "string" then
-					local sSkills = rSkillsStringNode.getText()
-					if not sSkills:lower():match(LOCALIZED_STEALTH_LOWER .. "%s+[+-]?%d") then
-						local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
+					local sSkills = rSkillsStringNode.getText() or ""
+					if isBlankSafe(sSkills) then
 						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
-						local sNewSkillsValue = sStealthWithMod .. ", " .. sSkills
-						rSkillsStringNode.setValue(sNewSkillsValue:gsub("^%s*(.-),%s*$", "%1"))
+						if rSkillsStringNode.setValue then
+							rSkillsStringNode.setValue(sStealthWithMod)
+						else
+							DB.setValue(nodeCT, "skills", "string", sStealthWithMod)
+						end
+						bAdded = true
+					elseif not hasStealthSkillInString(sSkills) then
+						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
+						local sNewSkillsValue = (sStealthWithMod .. ", " .. trimSafe(sSkills)):gsub("^%s*(.-),%s*$", "%1")
+						if rSkillsStringNode.setValue then
+							rSkillsStringNode.setValue(sNewSkillsValue)
+						else
+							DB.setValue(nodeCT, "skills", "string", sNewSkillsValue)
+						end
+						bAdded = true
 					end
 				elseif rSkillsStringNode.getType() == "node" then
 					local bFound = false
 					for _, nodeSkill in pairs(rSkillsStringNode.getChildren()) do
-						local sName = DB.getValue(nodeSkill, "name", ""):lower()
+						local sName = trimSafe(DB.getValue(nodeSkill, "name", "")):lower()
 						if sName == "stealth" then
 							bFound = true
 							break
 						end
 					end
 					if not bFound then
-						local nodeNewSkill = rSkillsStringNode.createChild()
-						DB.setValue(nodeNewSkill, "name", "string", "Stealth")
-						local nDex = getStatValueSafe(nodeCT, "dexterity") or getStatValueSafe(nodeCT, "dex")
-						DB.setValue(nodeNewSkill, "value", "number", nDex)
+						local nodeNewSkill = (DB.createChild and DB.createChild(rSkillsStringNode)) or (rSkillsStringNode.createChild and rSkillsStringNode.createChild())
+						if nodeNewSkill then
+							DB.setValue(nodeNewSkill, "name", "string", "Stealth")
+							DB.setValue(nodeNewSkill, "value", "number", nDex)
+							bAdded = true
+						end
+					end
+				end
+			else
+				local rCreatedSkillsCol = (DB.createChild and DB.createChild(nodeCT, "skillsCol")) or (nodeCT.createChild and nodeCT.createChild("skillsCol"))
+				if rCreatedSkillsCol then
+					local nodeNewSkill = (DB.createChild and DB.createChild(rCreatedSkillsCol)) or (rCreatedSkillsCol.createChild and rCreatedSkillsCol.createChild())
+					if nodeNewSkill then
+						DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
+						DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
+						DB.setValue(nodeNewSkill, "skillLvl", "number", 0)
+						DB.setValue(nodeNewSkill, "isVisible", "number", 1)
+						bAdded = true
 					end
 				end
 			end
+		end
+
+		if bAdded then
+			pcall(refreshOpenNpcWindow, nodeCT)
 		end
 	end
 end
@@ -897,7 +1049,7 @@ function getPassivePerceptionNumber(vActor)
 		end
 	else
 		-- Fallback to our robust database scanner
-		local nInt = getStatValueSafe(nodeCreature, "intelligence") or getStatValueSafe(nodeCreature, "int")
+		local nInt = tryGetStatValue(nodeCreature, "int") or tryGetStatValue(nodeCreature, "intelligence") or 0
 		local nPerception = getSkillValueSafe(nodeCreature, "perception")
 		nSkillBase = nInt + nPerception
 	end
