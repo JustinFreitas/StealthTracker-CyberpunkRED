@@ -1608,8 +1608,10 @@ function setNodeWithStealthValue(sCTNode, nStealthTotal, bSecret)
 	local nCurrentActorInit = DB.getValue(nodeCT, "initresult", 0)
 	local nEffectExpirationInit = nCurrentActorInit - .1
 	local nEffectDuration = 0
+	local sInitSource = nil
 	if checkExpireActionAndRound() then
 		nEffectDuration = 2
+		sInitSource = "turn" -- prevent ActorEffectManager.onInitResultUpdate from overwriting the - 0.1 offset on init changes.
 	end
 
 	local nEffectGMOnly = booleanToNumber((bSecret and true or false) or isPlayerStealthInfoDisabled() or (isNpc(nodeCT) and not isFriend(nodeCT)))
@@ -1617,21 +1619,34 @@ function setNodeWithStealthValue(sCTNode, nStealthTotal, bSecret)
 		sName = sEffectName,
 		nInit = nEffectExpirationInit,
 		nDuration = nEffectDuration,
-		nGMOnly = nEffectGMOnly
+		nGMOnly = nEffectGMOnly,
+		sInitSource = sInitSource
 	}
 
 	-- Only show the chat announcement message if visibility is set to 'all' (Chat and Effects) and it is not a GM-only effect.
 	local sVisibility = OptionsManager.getOption(STEALTHTRACKER_VISIBILITY)
 	local bShowMsg = (sVisibility == ALL) and (nEffectGMOnly == 0)
 
-	EffectManager.addEffect("", "", nodeCT, rEffect, bShowMsg)
+	local nodeCreatedEffect = EffectManager.addEffect("", "", nodeCT, rEffect, bShowMsg)
 
-	-- Explicitly set isgmonly on the newly created effect node if it is GM-only to ensure it is hidden from player CT
-	if nEffectGMOnly == 1 then
-		for _, nodeEffect in pairs(DB.getChildren(nodeCT, EFFECTS)) do
-			if DB.getValue(nodeEffect, "label", "") == sEffectName then
+	-- Explicitly enforce isgmonly for GM-only effects and restore fractional init when sInitSource == "turn"
+	-- (CoreRPG EffectVarManager.onEffectAddSetupInit overwrites rEffect.nInit with active CT initresult).
+	if nEffectGMOnly == 1 or sInitSource == "turn" then
+		local nodeEffect = nodeCreatedEffect
+		if not nodeEffect then
+			for _, nodeChild in pairs(DB.getChildren(nodeCT, EFFECTS)) do
+				if DB.getValue(nodeChild, "label", "") == sEffectName then
+					nodeEffect = nodeChild
+					break
+				end
+			end
+		end
+		if nodeEffect then
+			if nEffectGMOnly == 1 then
 				DB.setValue(nodeEffect, "isgmonly", "number", 1)
-				break
+			end
+			if sInitSource == "turn" then
+				DB.setValue(nodeEffect, "init", "number", nEffectExpirationInit)
 			end
 		end
 	end
