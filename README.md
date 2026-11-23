@@ -17,7 +17,7 @@ This extension monitors PC and NPC Stealth rolls, records their stealth score as
 4. **Stealth Expiration**:
    * Attacking or performing loud/obvious actions will automatically expire the actor's active `Stealth` effect (configurable via options).
 5. **NPC Skill Generation**:
-   * Automatically ensures NPC sheets placed in the Combat Tracker have a valid Stealth skill configured (calculated from their DEX modifier if missing).
+   * When an NPC without a configured Stealth skill is added to the Combat Tracker (individually, via map token drop, or from an Encounter), present in the Combat Tracker on campaign load, or activated on its turn, StealthTracker automatically adds `Stealth` (using the NPC's `DEX` stat at skill level `0`, creating `skillsCol` if the NPC had no prior skills) and refreshes any open NPC sheet immediately. Traps, Objects, Hazards, and actors tagged `no stealthtracker` are automatically skipped.
 
 ---
 
@@ -26,11 +26,11 @@ This extension monitors PC and NPC Stealth rolls, records their stealth score as
 StealthTracker adds a dedicated settings group under the GM Options window:
 
 * **Player: Out of turn or combat Stealth**:
-  * *None (Default)*: Stealth tracking is only active during combat on the actor's active turn.
-  * *Turn / Turn and Combat*: Allows tracking out of turn or out of combat.
+  * *Turn and Combat (Default)*: Allows stealth tracking out of turn and out of combat.
+  * *Turn / None*: Restricts stealth tracking to the actor's turn out of combat, or strictly to their active turn in combat.
 * **CT: Expire Stealth effect**:
-  * *Attack and Round (Default)*: Expires stealth automatically on attacks or round ticks.
-  * *Attack / None*: Expiration only on attack rolls, or manual management.
+  * *Attack (Default)*: Expires stealth automatically upon making an attack roll.
+  * *Attack and Round / None*: Expires stealth on attacks and round ticks, or retains stealth until manually cleared.
 * **Player: Show Stealth info**:
   * *Effects (Default)*: Shows Stealth tracker effects to players.
   * *Chat and Effects / None*: Hides or reveals Stealth status messages to player client chats.
@@ -50,10 +50,10 @@ Search for **"Cyberpunk RED StealthTracker"** in the Forge within Fantasy Ground
 ### Manual / Developer Build
 
 If you're building from source instead of using Forge:
-1. Run [build-stealthtracker-zip.bat](file:///C:/code/StealthTracker-CyberpunkRED/build/build-stealthtracker-zip.bat) in the `/build` folder to package the files into a `.ext` file.
-2. Move the generated `CyberpunkRED-StealthTracker.ext` file into your Fantasy Grounds Unity `extensions` directory.
+1. Run `build/package.ps1` (or `build/build-stealthtracker-zip.bat`) to package the files into `CyberpunkRED-StealthTracker.ext`.
+2. Move the generated `CyberpunkRED-StealthTracker.ext` file into your Fantasy Grounds Unity `extensions` directory (`package.ps1` copies it automatically).
 
-Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Extensions window when loading a Cyberpunk RED campaign.
+Either way, once installed, enable **Feature: StealthTracker for Cyberpunk RED** from the Extensions window when loading a Cyberpunk RED campaign.
 
 ---
 
@@ -61,7 +61,7 @@ Either way, once installed, enable **Cyberpunk RED StealthTracker** from the Ext
 
 ### v1.7.1
 * **CoreRPG Initiative Sync Hardening (Nov 2026)**: Added `sInitSource = "turn"` on duration-2 fractional stealth effects during round and action-based expiration checks (and restored the fractional `init` offset after `EffectManager.addEffect`) to maintain full compatibility with CoreRPG `ActorEffectManager.onInitResultUpdate` and `EffectVarManager.onEffectAddSetupInit`, preventing ruleset initiative synchronization from resetting fractional sub-turn offsets.
-* **Immediate NPC Stealth Skill Population & Stat/Skill Fixes**: Hooked `CombatRecordManager` NPC post-add and `onTabletopInit` so `Stealth` (`DEX + 0`) is populated as soon as an NPC enters the Combat Tracker (and on campaign load), with automatic UI refresh for open NPC sheets. Fixed `Reusable.getNPCSkillBaseFor` Lua `0`-truthiness check and `tryGetStatValue` fallback resolution, and added automatic `skillsCol` creation for zero-skill NPCs.
+* **Immediate NPC Stealth Skill Population & Stat/Skill Fixes**: Hooked `CombatRecordManager` NPC post-add (with `onRecordTypeEvent` safety fallback) and `onTabletopInit` so `Stealth` (`DEX` base, skill level `0`) is populated as soon as an NPC enters the Combat Tracker and on campaign load, with automatic UI refresh for open NPC sheets. Fixed `Reusable.getNPCSkillBaseFor` Lua `0`-truthiness false-positives, fixed `tryGetStatValue` fallback `DEX`/`INT` resolution, added automatic `skillsCol` creation for zero-skill NPCs, and skipped Traps, Objects, and Hazards.
 
 ### v1.7
 * **Dice Tower & Secret Roll Privacy**: Stealth rolls made in the Dice Tower or secretly (`rRoll.bSecret` / `rRoll.bTower`, including critical continuation rolls and secret chat rolls dragged onto the CT) now automatically mark the resulting `Stealth: X` Combat Tracker effect as `GM Only` (`isgmonly = 1`) and suppress public chat announcements, even when `Player: Show Stealth info` is set to `Effects` or `Chat and Effects`.
