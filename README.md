@@ -59,6 +59,9 @@ Either way, once installed, enable **Feature: StealthTracker for Cyberpunk RED**
 
 ## Changelog
 
+### v1.7.2
+* **FGU `DB.*` Package API Migration**: Migrated all 26 legacy `databasenode` object method calls (`getChild`, `getChildren`, `getName`, `getType`, `getText`, `setValue`, `createChild`, `delete`) in `scripts/stealthtracker.lua` to modern FGU `DB.*` package APIs (`DB.getChild`, `DB.getChildren`, `DB.getName`, `DB.getType`, `DB.getText`, `DB.setValue`, `DB.createChild`, `DB.deleteNode`).
+
 ### v1.7.1
 * **CoreRPG Initiative Sync Hardening (Nov 2026)**: Added `sInitSource = "turn"` on duration-2 fractional stealth effects during round and action-based expiration checks (and restored the fractional `init` offset after `EffectManager.addEffect`) to maintain full compatibility with CoreRPG `ActorEffectManager.onInitResultUpdate` and `EffectVarManager.onEffectAddSetupInit`, preventing ruleset initiative synchronization from resetting fractional sub-turn offsets.
 * **Immediate NPC Stealth Skill Population & Stat/Skill Fixes**: Hooked `CombatRecordManager` NPC post-add (with `onRecordTypeEvent` safety fallback) and `onTabletopInit` so `Stealth` (`DEX` base, skill level `0`) is populated as soon as an NPC enters the Combat Tracker and on campaign load, with automatic UI refresh for open NPC sheets. Fixed `Reusable.getNPCSkillBaseFor` Lua `0`-truthiness false-positives, fixed `tryGetStatValue` fallback `DEX`/`INT` resolution, added automatic `skillsCol` creation for zero-skill NPCs, and skipped Traps, Objects, and Hazards.

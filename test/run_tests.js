@@ -150,7 +150,44 @@ async function runTests() {
         function OptionsManager.getOption(key) return OptionsManager_mock_options[key] or "off" end
         function OptionsManager.isOption(key, val) return false end
 
+        function DB.getChild(node, path)
+            if type(node) == "table" and type(node.getChild) == "function" then
+                return node.getChild(path)
+            end
+            return nil
+        end
+
+        function DB.getName(node)
+            if type(node) == "table" and type(node.getName) == "function" then
+                return node.getName()
+            end
+            return ""
+        end
+
+        function DB.getType(node)
+            if type(node) == "table" and type(node.getType) == "function" then
+                return node.getType()
+            end
+            return ""
+        end
+
+        function DB.createChild(node, name)
+            if type(node) == "table" and type(node.createChild) == "function" then
+                return node.createChild(name)
+            end
+            return nil
+        end
+
+        function DB.deleteNode(node)
+            if type(node) == "table" and type(node.delete) == "function" then
+                node.delete()
+            end
+        end
+
         function DB.getChildren(node, path)
+            if type(node) == "table" and path == nil and type(node.getChildren) == "function" then
+                return node.getChildren()
+            end
             if type(node) == "table" and type(node.getChild) == "function" then
                 local childNode = node.getChild(path)
                 if childNode and type(childNode.getChildren) == "function" then
@@ -418,6 +455,9 @@ async function runTests() {
         end
 
         DB.getChildren = function(node, path)
+            if node and path == nil and type(node.getChildren) == "function" then
+                return node.getChildren()
+            end
             if node and type(node.getChild) == "function" then
                 local childNode = node.getChild(path)
                 if childNode and type(childNode.getChildren) == "function" then

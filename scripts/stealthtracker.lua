@@ -176,10 +176,10 @@ local function tryGetStatValue(nodeActor, sStatName)
     end
     
     -- Try to find in stats children dynamically
-    local nodeStats = nodeActor.getChild("stats")
+    local nodeStats = DB.getChild(nodeActor, "stats")
     if nodeStats then
-        for _, nodeStat in pairs(nodeStats.getChildren()) do
-            local sNodeName = nodeStat.getName():lower()
+        for _, nodeStat in pairs(DB.getChildren(nodeStats)) do
+            local sNodeName = (DB.getName(nodeStat) or ""):lower()
             if sNodeName == sNameLower or sNodeName:match(sNameLower) or DB.getValue(nodeStat, "name", ""):lower() == sNameLower then
                 local val = DB.getValue(nodeStat, "value") or DB.getValue(nodeStat, "total") or DB.getValue(nodeStat, "current")
                 if type(val) == "number" then
@@ -211,17 +211,17 @@ local function getSkillValueSafe(nodeActor, sSkillName)
     -- Search skills or skilllist children (CPRed uses skillsCol)
     local listNodes = { "skillsCol", "skilllist", "skills" }
     for _, listName in ipairs(listNodes) do
-        local nodeSkills = nodeActor.getChild(listName)
+        local nodeSkills = DB.getChild(nodeActor, listName)
         if nodeSkills then
-            for _, nodeSkillGroup in pairs(nodeSkills.getChildren()) do
+            for _, nodeSkillGroup in pairs(DB.getChildren(nodeSkills)) do
                 -- CPRed PC character sheets list sub-skills (listSkillSpecifics)
                 local subLists = { "listSkillSpecifics", "listSubSkillSpecifics" }
                 local bHasChildren = false
                 for _, subListName in ipairs(subLists) do
-                    local nodeSub = nodeSkillGroup.getChild(subListName)
+                    local nodeSub = DB.getChild(nodeSkillGroup, subListName)
                     if nodeSub then
                         bHasChildren = true
-                        for _, nodeSubSkill in pairs(nodeSub.getChildren()) do
+                        for _, nodeSubSkill in pairs(DB.getChildren(nodeSub)) do
                             local sName = DB.getValue(nodeSubSkill, "skillName", ""):gsub("%(x2%)", ""):gsub("%s+", ""):lower()
                             if sName == sSkillLower or sName:match(sSkillLower) then
                                 local rank = DB.getValue(nodeSubSkill, "skillBase") or DB.getValue(nodeSubSkill, "level") or DB.getValue(nodeSubSkill, "rank") or DB.getValue(nodeSubSkill, "value") or DB.getValue(nodeSubSkill, "total")
@@ -254,7 +254,7 @@ end
 local function getNumericModifierFromEffects(nodeCT, sKeyword)
     if not nodeCT then return 0 end
     local nMod = 0
-    local nodeEffects = nodeCT.getChild("effects")
+    local nodeEffects = DB.getChild(nodeCT, "effects")
     if nodeEffects then
         local sKeywordLower = sKeyword:lower()
         -- Match patterns like "keyword: +2", "keyword: -1", "keyword +2", "keyword -1"
@@ -262,7 +262,7 @@ local function getNumericModifierFromEffects(nodeCT, sKeyword)
             "^%s*" .. sKeywordLower .. "%s*:%s*([+-]?%d+)%s*$",
             "^%s*" .. sKeywordLower .. "%s*([+-]%d+)%s*$",
         }
-        for _, nodeEffect in pairs(nodeEffects.getChildren()) do
+        for _, nodeEffect in pairs(DB.getChildren(nodeEffects)) do
             local sLabel = DB.getValue(nodeEffect, "label", ""):lower()
             local aComponents = EffectManager.parseEffect and EffectManager.parseEffect(sLabel) or { sLabel }
             for _, component in ipairs(aComponents) do
@@ -281,10 +281,10 @@ end
 -- Direct fallback to search effects on CT node directly if ruleset manager is missing
 local function hasEffectFallback(nodeCT, sEffect)
     if not nodeCT then return false end
-    local nodeEffects = nodeCT.getChild("effects")
+    local nodeEffects = DB.getChild(nodeCT, "effects")
     if nodeEffects then
         local sSearch = sEffect:lower()
-        for _, nodeEffect in pairs(nodeEffects.getChildren()) do
+        for _, nodeEffect in pairs(DB.getChildren(nodeEffects)) do
             local sLabel = DB.getValue(nodeEffect, "label", ""):lower()
             if sLabel == sSearch or sLabel:match(sSearch) then
                 return true
@@ -606,11 +606,7 @@ function deleteAllStealthEffects(nodeCT)
 	if not nodeCT then return end
 	for _, nodeEffect in pairs(DB.getChildren(nodeCT, EFFECTS)) do
 		if getStealthValueFromEffectNode(nodeEffect) then
-			if DB and DB.deleteNode then
-				DB.deleteNode(nodeEffect)
-			elseif nodeEffect.delete then
-				nodeEffect.delete()
-			end
+			DB.deleteNode(nodeEffect)
 		end
 	end
 end
@@ -854,9 +850,9 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 	local bHasStealth = false
 
 	-- 1. Scan skillsCol children directly for existing Stealth node
-	local rSkillsNode = nodeCT.getChild("skillsCol")
+	local rSkillsNode = DB.getChild(nodeCT, "skillsCol")
 	if rSkillsNode then
-		for _, nodeSkill in pairs(rSkillsNode.getChildren()) do
+		for _, nodeSkill in pairs(DB.getChildren(rSkillsNode)) do
 			local sName = trimSafe(DB.getValue(nodeSkill, "skillName", "")):gsub("%(x2%)", "")
 			sName = trimSafe(sName):lower()
 			if sName == "stealth" then
@@ -872,7 +868,7 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 
 		if rSkillsNode then
 			-- Official Cyberpunk RED NPC skills node
-			local nodeNewSkill = (DB.createChild and DB.createChild(rSkillsNode)) or (rSkillsNode.createChild and rSkillsNode.createChild())
+			local nodeNewSkill = DB.createChild(rSkillsNode)
 			if nodeNewSkill then
 				DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
 				DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
@@ -882,31 +878,24 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 			end
 		else
 			-- Check legacy string/node skills format, or create official skillsCol if neither exists
-			local rSkillsStringNode = nodeCT.getChild("skills")
+			local rSkillsStringNode = DB.getChild(nodeCT, "skills")
 			if rSkillsStringNode then
-				if rSkillsStringNode.getType() == "string" then
-					local sSkills = rSkillsStringNode.getText() or ""
+				local sSkillsNodeType = DB.getType(rSkillsStringNode)
+				if sSkillsNodeType == "string" then
+					local sSkills = DB.getText(nodeCT, "skills", "")
 					if isBlankSafe(sSkills) then
 						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
-						if rSkillsStringNode.setValue then
-							rSkillsStringNode.setValue(sStealthWithMod)
-						else
-							DB.setValue(nodeCT, "skills", "string", sStealthWithMod)
-						end
+						DB.setValue(nodeCT, "skills", "string", sStealthWithMod)
 						bAdded = true
 					elseif not hasStealthSkillInString(sSkills) then
 						local sStealthWithMod = LOCALIZED_STEALTH .. " " .. (nDex >= 0 and "+" or "") .. nDex
 						local sNewSkillsValue = (sStealthWithMod .. ", " .. trimSafe(sSkills)):gsub("^%s*(.-),%s*$", "%1")
-						if rSkillsStringNode.setValue then
-							rSkillsStringNode.setValue(sNewSkillsValue)
-						else
-							DB.setValue(nodeCT, "skills", "string", sNewSkillsValue)
-						end
+						DB.setValue(nodeCT, "skills", "string", sNewSkillsValue)
 						bAdded = true
 					end
-				elseif rSkillsStringNode.getType() == "node" then
+				elseif sSkillsNodeType == "node" then
 					local bFound = false
-					for _, nodeSkill in pairs(rSkillsStringNode.getChildren()) do
+					for _, nodeSkill in pairs(DB.getChildren(rSkillsStringNode)) do
 						local sName = trimSafe(DB.getValue(nodeSkill, "name", "")):lower()
 						if sName == "stealth" then
 							bFound = true
@@ -914,7 +903,7 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 						end
 					end
 					if not bFound then
-						local nodeNewSkill = (DB.createChild and DB.createChild(rSkillsStringNode)) or (rSkillsStringNode.createChild and rSkillsStringNode.createChild())
+						local nodeNewSkill = DB.createChild(rSkillsStringNode)
 						if nodeNewSkill then
 							DB.setValue(nodeNewSkill, "name", "string", "Stealth")
 							DB.setValue(nodeNewSkill, "value", "number", nDex)
@@ -923,9 +912,9 @@ function ensureStealthSkillExistsOnNpc(nodeCT)
 					end
 				end
 			else
-				local rCreatedSkillsCol = (DB.createChild and DB.createChild(nodeCT, "skillsCol")) or (nodeCT.createChild and nodeCT.createChild("skillsCol"))
+				local rCreatedSkillsCol = DB.createChild(nodeCT, "skillsCol")
 				if rCreatedSkillsCol then
-					local nodeNewSkill = (DB.createChild and DB.createChild(rCreatedSkillsCol)) or (rCreatedSkillsCol.createChild and rCreatedSkillsCol.createChild())
+					local nodeNewSkill = DB.createChild(rCreatedSkillsCol)
 					if nodeNewSkill then
 						DB.setValue(nodeNewSkill, "skillName", "string", "Stealth")
 						DB.setValue(nodeNewSkill, "skillBase", "number", nDex)
@@ -965,10 +954,8 @@ function expireStealthEffectOnCTNode(rActor, aOutput)
 		else
 			if EffectManager and EffectManager.expireEffect then
 				EffectManager.expireEffect(nodeCT, nodeLastEffectWithStealth, 0)
-			elseif DB and DB.deleteNode then
+			else
 				DB.deleteNode(nodeLastEffectWithStealth)
-			elseif nodeLastEffectWithStealth.delete then
-				nodeLastEffectWithStealth.delete()
 			end
 		end
 	end
